@@ -1,8 +1,8 @@
 #include <windows.h>
 #include <d3d9.h>
-#include "imgui/imgui.h"
-#include "imgui/imgui_impl_win32.h"
-#include "imgui/imgui_impl_dx9.h"
+#include "imgui.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx9.h"
 
 static LPDIRECT3D9           g_pD3D = NULL;
 static LPDIRECT3DDEVICE9     g_pd3dDevice = NULL;
@@ -77,7 +77,12 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     ImGui_ImplWin32_EnableDpiAwareness();
 
-    WNDCLASSEXA wc = { sizeof(WNDCLASSEXA), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "Armax-Display", NULL };
+    HICON hIconBig = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
+                                       GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
+    HICON hIconSmall = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
+                                         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+
+    WNDCLASSEXA wc = { sizeof(WNDCLASSEXA), CS_CLASSDC, WndProc, 0L, 0L, hInstance, hIconBig, NULL, NULL, NULL, "Armax-Display", hIconSmall };
     RegisterClassExA(&wc);
 
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
@@ -90,6 +95,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         UnregisterClassA(wc.lpszClassName, wc.hInstance);
         return 1;
     }
+
+    SendMessageA(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIconBig);
+    SendMessageA(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
 
     if (!CreateDevice(hwnd)) {
         DestroyWindow(hwnd);
