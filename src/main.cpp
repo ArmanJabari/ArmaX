@@ -1,5 +1,10 @@
 #include <windows.h>
 #include <d3d9.h>
+#include <dwmapi.h>
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
@@ -95,6 +100,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         UnregisterClassA(wc.lpszClassName, wc.hInstance);
         return 1;
     }
+
+    BOOL darkMode = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
 
     SendMessageA(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIconBig);
     SendMessageA(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
