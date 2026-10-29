@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <d3d9.h>
+#include <string.h>
 #include <dwmapi.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -82,10 +83,16 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     ImGui_ImplWin32_EnableDpiAwareness();
 
-    HICON hIconBig = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
-                                       GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
-    HICON hIconSmall = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
-                                         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+    char iconPath[MAX_PATH];
+    GetModuleFileNameA(NULL, iconPath, MAX_PATH);
+    char* slash = strrchr(iconPath, '\\');
+    if (slash) *(slash + 1) = '\0';
+    strcat(iconPath, "assets\\icon.ico");
+
+    HICON hIconBig = (HICON)LoadImageA(NULL, iconPath, IMAGE_ICON,
+                                       GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_LOADFROMFILE);
+    HICON hIconSmall = (HICON)LoadImageA(NULL, iconPath, IMAGE_ICON,
+                                         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
 
     WNDCLASSEXA wc = { sizeof(WNDCLASSEXA), CS_CLASSDC, WndProc, 0L, 0L, hInstance, hIconBig, NULL, NULL, NULL, "Armax-Display", hIconSmall };
     RegisterClassExA(&wc);
