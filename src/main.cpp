@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
+#include "font8x8.h"
 
 static LPDIRECT3D9           g_pD3D = NULL;
 static LPDIRECT3DDEVICE9     g_pd3dDevice = NULL;
