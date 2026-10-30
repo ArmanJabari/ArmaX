@@ -2,6 +2,8 @@
 #include <d3d9.h>
 #include <string.h>
 #include <dwmapi.h>
+#include <vector>
+#include <string>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -135,6 +137,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     const D3DCOLOR clear_col = D3DCOLOR_RGBA(15, 15, 15, 255);
 
+    std::vector<std::string> history;
+    std::string currentLine = "";
+
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
     while (msg.message != WM_QUIT) {
@@ -173,6 +178,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
+        for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
+            unsigned int c = io.InputQueueCharacters[i];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            if (c >= 0x20 && c <= 0x7E && currentLine.length() < 36) {
+                currentLine.push_back((char)c);
+            }
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !currentLine.empty()) {
+            currentLine.pop_back();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+            history.push_back(currentLine);
+            if (history.size() > 18)
+                history.erase(history.begin());
+            currentLine.clear();
+        }
+
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
         ImGui::SetNextWindowSize(vp->WorkSize);
@@ -184,6 +206,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
 
         ImGui::Begin("Display", nullptr, flags);
+        {
+            const float scale = 1.0f;
+            const ImU32 white = IM_COL32(255, 255, 255, 255);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 o(floorf(vp->WorkPos.x + 8.0f), floorf(vp->WorkPos.y + 8.0f));
+
+            float yOffset = 0.0f;
+            for (const auto& line : history) {
+                Font8x8::Draw(dl, ImVec2(o.x, o.y + yOffset), ">", scale, white);
+                Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), line.c_str(), scale, white);
+                yOffset += 12.0f * scale;
+            }
+
+            ImVec2 tp(o.x, o.y + yOffset);
+            Font8x8::Draw(dl, tp, ">", scale, white);
+            Font8x8::Draw(dl, ImVec2(tp.x + 16.0f * scale, tp.y), currentLine.c_str(), scale, white);
+            if (((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
+                Font8x8::Draw(dl, ImVec2(tp.x + (16.0f + (float)currentLine.length() * 8.0f) * scale, tp.y), "_", scale, white);
+        }
         ImGui::End();
 
         ImGui::PopStyleVar(2);
