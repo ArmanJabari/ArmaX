@@ -21,6 +21,11 @@ static UINT                  g_ResizeWidth = 0, g_ResizeHeight = 0;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+struct Row {
+    std::string text;
+    bool prompt;
+};
+
 static bool CreateDevice(HWND hwnd) {
     g_pD3D = Direct3DCreate9(D3D_SDK_VERSION);
     if (!g_pD3D)
@@ -137,6 +142,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     const D3DCOLOR clear_col = D3DCOLOR_RGBA(15, 15, 15, 255);
 
+    const size_t COLS = 36;
+    const size_t MAXROWS = 19;
+    const size_t MAXHISTORY = 200;
+
     std::vector<std::string> history;
     std::string currentLine = "";
 
@@ -181,7 +190,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
             unsigned int c = io.InputQueueCharacters[i];
             if (c >= 'a' && c <= 'z') c -= 32;
-            if (c >= 0x20 && c <= 0x7E && currentLine.length() < 36) {
+            if (c >= 0x20 && c <= 0x7E) {
                 currentLine.push_back((char)c);
             }
         }
@@ -190,10 +199,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
             history.push_back(currentLine);
-            if (history.size() > 18)
+            if (history.size() > MAXHISTORY)
                 history.erase(history.begin());
             currentLine.clear();
         }
+
+        std::vector<Row> rows;
+        for (const auto& entry : history) {
+            if (entry.empty()) {
+                rows.push_back({ "", true });
+                continue;
+            }
+            for (size_t pos = 0; pos < entry.length(); pos += COLS)
+                rows.push_back({ entry.substr(pos, COLS), pos == 0 });
+        }
+        size_t curRows = currentLine.length() / COLS + 1;
+        for (size_t r = 0; r < curRows; r++)
+            rows.push_back({ currentLine.substr(r * COLS, COLS), r == 0 });
+
+        size_t startRow = rows.size() > MAXROWS ? rows.size() - MAXROWS : 0;
+        size_t cursorCol = currentLine.length() % COLS;
 
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
@@ -213,17 +238,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ImVec2 o(floorf(vp->WorkPos.x + 8.0f), floorf(vp->WorkPos.y + 8.0f));
 
             float yOffset = 0.0f;
-            for (const auto& line : history) {
-                Font8x8::Draw(dl, ImVec2(o.x, o.y + yOffset), ">", scale, white);
-                Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), line.c_str(), scale, white);
+            for (size_t i = startRow; i < rows.size(); i++) {
+                if (rows[i].prompt)
+                    Font8x8::Draw(dl, ImVec2(o.x, o.y + yOffset), ">", scale, white);
+                if (!rows[i].text.empty())
+                    Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), rows[i].text.c_str(), scale, white);
+
+                if (i == rows.size() - 1 && ((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
+                    Font8x8::Draw(dl, ImVec2(o.x + (16.0f + (float)cursorCol * 8.0f) * scale, o.y + yOffset), "_", scale, white);
+
                 yOffset += 12.0f * scale;
             }
-
-            ImVec2 tp(o.x, o.y + yOffset);
-            Font8x8::Draw(dl, tp, ">", scale, white);
-            Font8x8::Draw(dl, ImVec2(tp.x + 16.0f * scale, tp.y), currentLine.c_str(), scale, white);
-            if (((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
-                Font8x8::Draw(dl, ImVec2(tp.x + (16.0f + (float)currentLine.length() * 8.0f) * scale, tp.y), "_", scale, white);
         }
         ImGui::End();
 
