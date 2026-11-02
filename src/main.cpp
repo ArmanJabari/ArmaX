@@ -66,6 +66,70 @@ static bool ResetDevice() {
     return true;
 }
 
+bool ConfigureSerialPort(HANDLE hSerial) {
+    DCB dcbSerialParams = { 0 };
+    dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+    if (!GetCommState(hSerial, &dcbSerialParams))
+        return false;
+
+    dcbSerialParams.BaudRate = CBR_115200;
+    dcbSerialParams.ByteSize = 8;
+    dcbSerialParams.StopBits = ONESTOPBIT;
+    dcbSerialParams.Parity = NOPARITY;
+    dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
+
+    if (!SetCommState(hSerial, &dcbSerialParams))
+        return false;
+
+    COMMTIMEOUTS timeouts = { 0 };
+    timeouts.ReadIntervalTimeout = 50;
+    timeouts.ReadTotalTimeoutConstant = 100;
+    timeouts.ReadTotalTimeoutMultiplier = 10;
+    timeouts.WriteTotalTimeoutConstant = 50;
+    timeouts.WriteTotalTimeoutMultiplier = 10;
+    SetCommTimeouts(hSerial, &timeouts);
+
+    return true;
+}
+
+HANDLE AutoConnectPico(std::string& foundPortName) {
+    char portPath[32];
+    for (int i = 1; i <= 32; i++) {
+        sprintf(portPath, "\\\\.\\COM%d", i);
+
+        HANDLE hSerial = CreateFileA(portPath, GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+        if (hSerial == INVALID_HANDLE_VALUE)
+            continue;
+
+        if (!ConfigureSerialPort(hSerial)) {
+            CloseHandle(hSerial);
+            continue;
+        }
+
+        PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
+
+        const char* ping = "IDENTIFY\r\n";
+        DWORD written = 0;
+        WriteFile(hSerial, ping, (DWORD)strlen(ping), &written, NULL);
+
+        Sleep(120);
+
+        char readBuf[64] = { 0 };
+        DWORD readBytes = 0;
+        ReadFile(hSerial, readBuf, sizeof(readBuf) - 1, &readBytes, NULL);
+
+        if (readBytes > 0 && strstr(readBuf, "PICO_W_OK") != NULL) {
+            char displayPort[16];
+            sprintf(displayPort, "COM%d", i);
+            foundPortName = displayPort;
+            return hSerial;
+        }
+
+        CloseHandle(hSerial);
+    }
+    return INVALID_HANDLE_VALUE;
+}
+
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -149,6 +213,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::vector<std::string> history;
     std::string currentLine = "";
 
+    std::string connectedPort = "";
+    HANDLE hSerial = AutoConnectPico(connectedPort);
+
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
     while (msg.message != WM_QUIT) {
@@ -197,9 +264,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !currentLine.empty()) {
             currentLine.pop_back();
         }
+
         if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
             history.push_back(currentLine);
-            if (history.size() > MAXHISTORY)
+
+            if (hSerial != INVALID_HANDLE_VALUE && !currentLine.empty()) {
+                std::string commandToSend = currentLine + "\r\n";
+                DWORD bytesWritten;
+                WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
+            }
+
+            while (history.size() > MAXHISTORY)
                 history.erase(history.begin());
             currentLine.clear();
         }
@@ -273,6 +348,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     CleanupDevice();
     UnregisterClassA(wc.lpszClassName, wc.hInstance);
+
+    if (hSerial != INVALID_HANDLE_VALUE) {
+        CloseHandle(hSerial);
+    }
 
     return 0;
 }
