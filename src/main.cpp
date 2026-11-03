@@ -266,16 +266,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
 
         if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
-            history.push_back(currentLine);
+            if (currentLine == "CLEAR") {
+                history.clear();
+            } else {
+                history.push_back(currentLine);
 
-            if (hSerial != INVALID_HANDLE_VALUE && !currentLine.empty()) {
-                std::string commandToSend = currentLine + "\r\n";
-                DWORD bytesWritten;
-                WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
+                if (hSerial != INVALID_HANDLE_VALUE && !currentLine.empty()) {
+                    std::string commandToSend = currentLine + "\r\n";
+                    DWORD bytesWritten;
+                    WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
+                }
+
+                while (history.size() > MAXHISTORY)
+                    history.erase(history.begin());
             }
 
-            while (history.size() > MAXHISTORY)
-                history.erase(history.begin());
             currentLine.clear();
         }
 
