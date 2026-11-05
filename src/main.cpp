@@ -2,6 +2,7 @@
 #include <d3d9.h>
 #include <string.h>
 #include <dwmapi.h>
+#include <cmath>
 #include <vector>
 #include <string>
 
@@ -158,8 +159,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     char iconPath[MAX_PATH];
     GetModuleFileNameA(NULL, iconPath, MAX_PATH);
     char* slash = strrchr(iconPath, '\\');
-    if (slash) *(slash + 1) = '\0';
-    strcat(iconPath, "assets\\icon.ico");
+    if (slash) {
+        *(slash + 1) = '\0';
+        strncat(iconPath, "assets\\icon.ico", sizeof(iconPath) - strlen(iconPath) - 1);
+    }
 
     HICON hIconBig = (HICON)LoadImageA(NULL, iconPath, IMAGE_ICON,
                                        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_LOADFROMFILE);
@@ -212,9 +215,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     std::vector<std::string> history;
     std::string currentLine = "";
+    std::string incomingBuffer = "";
 
     std::string connectedPort = "";
     HANDLE hSerial = AutoConnectPico(connectedPort);
+
+    if (hSerial != INVALID_HANDLE_VALUE) {
+        COMMTIMEOUTS nonBlockingTimeouts = { MAXDWORD, 0, 0, 0, 0 };
+        SetCommTimeouts(hSerial, &nonBlockingTimeouts);
+    }
 
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
@@ -247,6 +256,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (!ResetDevice()) {
                 g_DeviceLost = true;
                 continue;
+            }
+        }
+
+        if (hSerial != INVALID_HANDLE_VALUE) {
+            char chunk[128];
+            DWORD bytesRead = 0;
+            while (ReadFile(hSerial, chunk, sizeof(chunk) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                chunk[bytesRead] = '\0';
+                incomingBuffer.append(chunk, bytesRead);
+
+                size_t nl;
+                while ((nl = incomingBuffer.find('\n')) != std::string::npos) {
+                    std::string line = incomingBuffer.substr(0, nl);
+                    if (!line.empty() && line.back() == '\r')
+                        line.pop_back();
+
+                    incomingBuffer.erase(0, nl + 1);
+
+                    if (!line.empty()) {
+                        history.push_back(line);
+                        while (history.size() > MAXHISTORY)
+                            history.erase(history.begin());
+                    }
+                }
             }
         }
 
@@ -293,9 +326,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             for (size_t pos = 0; pos < entry.length(); pos += COLS)
                 rows.push_back({ entry.substr(pos, COLS), pos == 0 });
         }
-        size_t curRows = currentLine.length() / COLS + 1;
-        for (size_t r = 0; r < curRows; r++)
-            rows.push_back({ currentLine.substr(r * COLS, COLS), r == 0 });
+
+        if (currentLine.empty()) {
+            rows.push_back({ "", true });
+        } else {
+            for (size_t pos = 0; pos < currentLine.length(); pos += COLS)
+                rows.push_back({ currentLine.substr(pos, COLS), pos == 0 });
+            if (currentLine.length() % COLS == 0)
+                rows.push_back({ "", false });
+        }
 
         size_t startRow = rows.size() > MAXROWS ? rows.size() - MAXROWS : 0;
         size_t cursorCol = currentLine.length() % COLS;
@@ -353,6 +392,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     CleanupDevice();
     UnregisterClassA(wc.lpszClassName, wc.hInstance);
+
+    if (hIconBig) DestroyIcon(hIconBig);
+    if (hIconSmall) DestroyIcon(hIconSmall);
 
     if (hSerial != INVALID_HANDLE_VALUE) {
         CloseHandle(hSerial);
