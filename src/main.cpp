@@ -287,6 +287,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) {
+            const char* clipText = ImGui::GetClipboardText();
+            if (clipText != nullptr) {
+                while (*clipText) {
+                    char c = *clipText++;
+                    if (c == '\r' || c == '\n') {
+                        break;
+                    }
+                    if (c >= 'a' && c <= 'z') c -= 32;
+                    if (c >= 0x20 && c <= 0x7E) {
+                        currentLine.push_back(c);
+                    }
+                }
+            }
+        }
+
         for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
             unsigned int c = io.InputQueueCharacters[i];
             if (c >= 'a' && c <= 'z') c -= 32;
