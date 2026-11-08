@@ -83,17 +83,17 @@ bool ConfigureSerialPort(HANDLE hSerial) {
         return false;
 
     COMMTIMEOUTS timeouts = { 0 };
-    timeouts.ReadIntervalTimeout = 50;
-    timeouts.ReadTotalTimeoutConstant = 100;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
-    timeouts.WriteTotalTimeoutConstant = 50;
-    timeouts.WriteTotalTimeoutMultiplier = 10;
+    timeouts.ReadIntervalTimeout = 20;
+    timeouts.ReadTotalTimeoutConstant = 40;
+    timeouts.ReadTotalTimeoutMultiplier = 0;
+    timeouts.WriteTotalTimeoutConstant = 20;
+    timeouts.WriteTotalTimeoutMultiplier = 0;
     SetCommTimeouts(hSerial, &timeouts);
 
     return true;
 }
 
-HANDLE AutoConnectPico(std::string& foundPortName) {
+HANDLE ScanAndConnectPico(std::string& foundPortName) {
     char portPath[32];
     for (int i = 1; i <= 32; i++) {
         sprintf(portPath, "\\\\.\\COM%d", i);
@@ -113,7 +113,7 @@ HANDLE AutoConnectPico(std::string& foundPortName) {
         DWORD written = 0;
         WriteFile(hSerial, ping, (DWORD)strlen(ping), &written, NULL);
 
-        Sleep(120);
+        Sleep(35);
 
         char readBuf[64] = { 0 };
         DWORD readBytes = 0;
@@ -123,6 +123,9 @@ HANDLE AutoConnectPico(std::string& foundPortName) {
             char displayPort[16];
             sprintf(displayPort, "COM%d", i);
             foundPortName = displayPort;
+
+            COMMTIMEOUTS nonBlockingTimeouts = { MAXDWORD, 0, 0, 0, 0 };
+            SetCommTimeouts(hSerial, &nonBlockingTimeouts);
             return hSerial;
         }
 
@@ -218,12 +221,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string incomingBuffer = "";
 
     std::string connectedPort = "";
-    HANDLE hSerial = AutoConnectPico(connectedPort);
-
-    if (hSerial != INVALID_HANDLE_VALUE) {
-        COMMTIMEOUTS nonBlockingTimeouts = { MAXDWORD, 0, 0, 0, 0 };
-        SetCommTimeouts(hSerial, &nonBlockingTimeouts);
-    }
+    HANDLE hSerial = INVALID_HANDLE_VALUE;
+    double lastScanTime = -10.0;
 
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
@@ -259,25 +258,48 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
         }
 
-        if (hSerial != INVALID_HANDLE_VALUE) {
-            char chunk[128];
-            DWORD bytesRead = 0;
-            while (ReadFile(hSerial, chunk, sizeof(chunk) - 1, &bytesRead, NULL) && bytesRead > 0) {
-                chunk[bytesRead] = '\0';
-                incomingBuffer.append(chunk, bytesRead);
+        double currentTime = ImGui::GetTime();
 
-                size_t nl;
-                while ((nl = incomingBuffer.find('\n')) != std::string::npos) {
-                    std::string line = incomingBuffer.substr(0, nl);
-                    if (!line.empty() && line.back() == '\r')
-                        line.pop_back();
+        if (hSerial == INVALID_HANDLE_VALUE) {
+            if (currentTime - lastScanTime >= 1.5) {
+                lastScanTime = currentTime;
+                hSerial = ScanAndConnectPico(connectedPort);
+                if (hSerial != INVALID_HANDLE_VALUE) {
+                    history.clear();
+                    currentLine.clear();
+                    incomingBuffer.clear();
+                }
+            }
+        } else {
+            DWORD commErrors = 0;
+            COMSTAT commStat;
+            if (!ClearCommError(hSerial, &commErrors, &commStat)) {
+                CloseHandle(hSerial);
+                hSerial = INVALID_HANDLE_VALUE;
+            } else {
+                char chunk[128];
+                DWORD bytesRead = 0;
+                BOOL ok = ReadFile(hSerial, chunk, sizeof(chunk) - 1, &bytesRead, NULL);
+                if (!ok) {
+                    CloseHandle(hSerial);
+                    hSerial = INVALID_HANDLE_VALUE;
+                } else if (bytesRead > 0) {
+                    chunk[bytesRead] = '\0';
+                    incomingBuffer.append(chunk, bytesRead);
 
-                    incomingBuffer.erase(0, nl + 1);
+                    size_t nl;
+                    while ((nl = incomingBuffer.find('\n')) != std::string::npos) {
+                        std::string line = incomingBuffer.substr(0, nl);
+                        if (!line.empty() && line.back() == '\r')
+                            line.pop_back();
 
-                    if (!line.empty()) {
-                        history.push_back(line);
-                        while (history.size() > MAXHISTORY)
-                            history.erase(history.begin());
+                        incomingBuffer.erase(0, nl + 1);
+
+                        if (!line.empty()) {
+                            history.push_back(line);
+                            while (history.size() > MAXHISTORY)
+                                history.erase(history.begin());
+                        }
                     }
                 }
             }
@@ -287,73 +309,46 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) {
-            const char* clipText = ImGui::GetClipboardText();
-            if (clipText != nullptr) {
-                while (*clipText) {
-                    char c = *clipText++;
-                    if (c == '\r' || c == '\n') {
-                        break;
-                    }
-                    if (c >= 'a' && c <= 'z') c -= 32;
-                    if (c >= 0x20 && c <= 0x7E) {
-                        currentLine.push_back(c);
+        if (hSerial != INVALID_HANDLE_VALUE) {
+            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) {
+                const char* clipText = ImGui::GetClipboardText();
+                if (clipText != nullptr) {
+                    while (*clipText) {
+                        char c = *clipText++;
+                        if (c == '\r' || c == '\n') break;
+                        if (c >= 'a' && c <= 'z') c -= 32;
+                        if (c >= 0x20 && c <= 0x7E) currentLine.push_back(c);
                     }
                 }
             }
-        }
 
-        for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
-            unsigned int c = io.InputQueueCharacters[i];
-            if (c >= 'a' && c <= 'z') c -= 32;
-            if (c >= 0x20 && c <= 0x7E) {
-                currentLine.push_back((char)c);
+            for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
+                unsigned int c = io.InputQueueCharacters[i];
+                if (c >= 'a' && c <= 'z') c -= 32;
+                if (c >= 0x20 && c <= 0x7E) currentLine.push_back((char)c);
             }
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !currentLine.empty()) {
-            currentLine.pop_back();
-        }
+            if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !currentLine.empty()) {
+                currentLine.pop_back();
+            }
 
-        if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
-            if (currentLine == "CLEAR") {
-                history.clear();
-            } else {
-                history.push_back(currentLine);
-
-                if (hSerial != INVALID_HANDLE_VALUE && !currentLine.empty()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+                if (currentLine == "CLEAR") {
+                    history.clear();
+                } else {
+                    history.push_back(currentLine);
                     std::string commandToSend = currentLine + "\r\n";
                     DWORD bytesWritten;
-                    WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
+                    BOOL ok = WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
+                    if (!ok) {
+                        CloseHandle(hSerial);
+                        hSerial = INVALID_HANDLE_VALUE;
+                    }
+                    while (history.size() > MAXHISTORY)
+                        history.erase(history.begin());
                 }
-
-                while (history.size() > MAXHISTORY)
-                    history.erase(history.begin());
+                currentLine.clear();
             }
-
-            currentLine.clear();
         }
-
-        std::vector<Row> rows;
-        for (const auto& entry : history) {
-            if (entry.empty()) {
-                rows.push_back({ "", true });
-                continue;
-            }
-            for (size_t pos = 0; pos < entry.length(); pos += COLS)
-                rows.push_back({ entry.substr(pos, COLS), pos == 0 });
-        }
-
-        if (currentLine.empty()) {
-            rows.push_back({ "", true });
-        } else {
-            for (size_t pos = 0; pos < currentLine.length(); pos += COLS)
-                rows.push_back({ currentLine.substr(pos, COLS), pos == 0 });
-            if (currentLine.length() % COLS == 0)
-                rows.push_back({ "", false });
-        }
-
-        size_t startRow = rows.size() > MAXROWS ? rows.size() - MAXROWS : 0;
-        size_t cursorCol = currentLine.length() % COLS;
 
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
@@ -372,17 +367,44 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImVec2 o(floorf(vp->WorkPos.x + 8.0f), floorf(vp->WorkPos.y + 8.0f));
 
-            float yOffset = 0.0f;
-            for (size_t i = startRow; i < rows.size(); i++) {
-                if (rows[i].prompt)
-                    Font8x8::Draw(dl, ImVec2(o.x, o.y + yOffset), ">", scale, white);
-                if (!rows[i].text.empty())
-                    Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), rows[i].text.c_str(), scale, white);
+            if (hSerial == INVALID_HANDLE_VALUE) {
+                Font8x8::Draw(dl, ImVec2(o.x, o.y), "FINDING ", scale, white);
+                Font8x8::DrawSpinner(dl, ImVec2(o.x + 64.0f * scale, o.y), scale, white, 6.0f);
+            } else {
+                std::vector<Row> rows;
+                for (const auto& entry : history) {
+                    if (entry.empty()) {
+                        rows.push_back({ "", true });
+                        continue;
+                    }
+                    for (size_t pos = 0; pos < entry.length(); pos += COLS)
+                        rows.push_back({ entry.substr(pos, COLS), pos == 0 });
+                }
 
-                if (i == rows.size() - 1 && ((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
-                    Font8x8::Draw(dl, ImVec2(o.x + (16.0f + (float)cursorCol * 8.0f) * scale, o.y + yOffset), "_", scale, white);
+                if (currentLine.empty()) {
+                    rows.push_back({ "", true });
+                } else {
+                    for (size_t pos = 0; pos < currentLine.length(); pos += COLS)
+                        rows.push_back({ currentLine.substr(pos, COLS), pos == 0 });
+                    if (currentLine.length() % COLS == 0)
+                        rows.push_back({ "", false });
+                }
 
-                yOffset += 12.0f * scale;
+                size_t startRow = rows.size() > MAXROWS ? rows.size() - MAXROWS : 0;
+                size_t cursorCol = currentLine.length() % COLS;
+
+                float yOffset = 0.0f;
+                for (size_t i = startRow; i < rows.size(); i++) {
+                    if (rows[i].prompt)
+                        Font8x8::Draw(dl, ImVec2(o.x, o.y + yOffset), ">", scale, white);
+                    if (!rows[i].text.empty())
+                        Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), rows[i].text.c_str(), scale, white);
+
+                    if (i == rows.size() - 1 && ((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
+                        Font8x8::Draw(dl, ImVec2(o.x + (16.0f + (float)cursorCol * 8.0f) * scale, o.y + yOffset), "_", scale, white);
+
+                    yOffset += 12.0f * scale;
+                }
             }
         }
         ImGui::End();

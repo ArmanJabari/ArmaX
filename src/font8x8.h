@@ -76,8 +76,18 @@ static const unsigned char GLYPHS[69][8] = {
     { 0x00, 0x00, 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00 }, // ~
 };
 
+static const unsigned char SPINNER_FRAMES[4][8] = {
+    { 0xCF, 0xC7, 0xC0, 0x80, 0x01, 0x03, 0xE3, 0xF3 },
+    { 0x3C, 0x18, 0xC3, 0xE7, 0xE7, 0xC3, 0x18, 0x3C },
+    { 0xF3, 0xE3, 0x03, 0x01, 0x80, 0xC0, 0xC7, 0xCF },
+    { 0xE7, 0xC3, 0x81, 0x00, 0x00, 0x81, 0xC3, 0xE7 }
+};
+
 static inline const unsigned char* Glyph(char c) {
     int u = (unsigned char)c;
+    if (u >= 'a' && u <= 'z') {
+        u -= ('a' - 'A');
+    }
     if (u >= 0x20 && u <= 0x60) return GLYPHS[u - 0x20];
     if (u >= 0x7B && u <= 0x7E) return GLYPHS[65 + (u - 0x7B)];
     return GLYPHS[0];
@@ -100,6 +110,20 @@ static inline void Draw(ImDrawList* dl, ImVec2 pos, const char* text, float scal
                     ImVec2 p1(floorf(cx + (x + 1) * scale), floorf(pos.y + (y + 1) * scale));
                     dl->AddRectFilled(p0, p1, col);
                 }
+            }
+        }
+    }
+}
+
+static inline void DrawSpinner(ImDrawList* dl, ImVec2 pos, float scale, ImU32 col, float speed = 6.0f) {
+    int frameIndex = (int)(ImGui::GetTime() * speed) % 4;
+    const unsigned char* g = SPINNER_FRAMES[frameIndex];
+    for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+            if (g[y] & (0x80 >> x)) {
+                ImVec2 p0(floorf(pos.x + x * scale), floorf(pos.y + y * scale));
+                ImVec2 p1(floorf(pos.x + (x + 1) * scale), floorf(pos.y + (y + 1) * scale));
+                dl->AddRectFilled(p0, p1, col);
             }
         }
     }
