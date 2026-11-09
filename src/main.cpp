@@ -218,6 +218,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     std::vector<std::string> history;
     std::string currentLine = "";
+    size_t cursorPos = 0;
     std::string incomingBuffer = "";
 
     std::string connectedPort = "";
@@ -267,6 +268,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 if (hSerial != INVALID_HANDLE_VALUE) {
                     history.clear();
                     currentLine.clear();
+                    cursorPos = 0;
                     incomingBuffer.clear();
                 }
             }
@@ -317,7 +319,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         char c = *clipText++;
                         if (c == '\r' || c == '\n') break;
                         if (c >= 'a' && c <= 'z') c -= 32;
-                        if (c >= 0x20 && c <= 0x7E) currentLine.push_back(c);
+                        if (c >= 0x20 && c <= 0x7E) {
+                            currentLine.insert(cursorPos, 1, c);
+                            cursorPos++;
+                        }
                     }
                 }
             }
@@ -325,10 +330,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
                 unsigned int c = io.InputQueueCharacters[i];
                 if (c >= 'a' && c <= 'z') c -= 32;
-                if (c >= 0x20 && c <= 0x7E) currentLine.push_back((char)c);
+                if (c >= 0x20 && c <= 0x7E) {
+                    currentLine.insert(cursorPos, 1, (char)c);
+                    cursorPos++;
+                }
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !currentLine.empty()) {
-                currentLine.pop_back();
+
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
+                if (cursorPos > 0)
+                    cursorPos--;
+            }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
+                if (cursorPos < currentLine.length())
+                    cursorPos++;
+            }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && cursorPos > 0) {
+                currentLine.erase(cursorPos - 1, 1);
+                cursorPos--;
             }
 
             if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
@@ -347,6 +367,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         history.erase(history.begin());
                 }
                 currentLine.clear();
+                cursorPos = 0;
             }
         }
 
@@ -381,6 +402,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         rows.push_back({ entry.substr(pos, COLS), pos == 0 });
                 }
 
+                size_t inputStartRow = rows.size();
+
                 if (currentLine.empty()) {
                     rows.push_back({ "", true });
                 } else {
@@ -391,7 +414,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
 
                 size_t startRow = rows.size() > MAXROWS ? rows.size() - MAXROWS : 0;
-                size_t cursorCol = currentLine.length() % COLS;
+                size_t cursorRowIndex = inputStartRow + (cursorPos / COLS);
+                size_t cursorCol = cursorPos % COLS;
 
                 float yOffset = 0.0f;
                 for (size_t i = startRow; i < rows.size(); i++) {
@@ -400,7 +424,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     if (!rows[i].text.empty())
                         Font8x8::Draw(dl, ImVec2(o.x + 16.0f * scale, o.y + yOffset), rows[i].text.c_str(), scale, white);
 
-                    if (i == rows.size() - 1 && ((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
+                    if (i == cursorRowIndex && ((int)(ImGui::GetTime() * 2.0)) % 2 == 0)
                         Font8x8::Draw(dl, ImVec2(o.x + (16.0f + (float)cursorCol * 8.0f) * scale, o.y + yOffset), "_", scale, white);
 
                     yOffset += 12.0f * scale;
