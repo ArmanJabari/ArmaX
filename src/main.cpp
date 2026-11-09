@@ -351,6 +351,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 cursorPos--;
             }
 
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                currentLine.clear();
+                cursorPos = 0;
+            }
+
             if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
                 if (currentLine == "CLEAR") {
                     history.clear();
