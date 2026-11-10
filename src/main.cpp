@@ -346,6 +346,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     cursorPos++;
             }
 
+            if (ImGui::IsKeyPressed(ImGuiKey_Home)) {
+                cursorPos = 0;
+            }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_End)) {
+                cursorPos = currentLine.length();
+            }
+
             if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && cursorPos > 0) {
                 currentLine.erase(cursorPos - 1, 1);
                 cursorPos--;
