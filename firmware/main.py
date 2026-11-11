@@ -1,6 +1,7 @@
 import machine
 import sys
 import select
+import gc
 
 led = machine.Pin("LED", machine.Pin.OUT)
 sensor_temp = machine.ADC(4)
@@ -13,10 +14,10 @@ while True:
     events = poller.poll(50)
     if events:
         raw = sys.stdin.readline().strip().lower()
-        
+
         if raw == "identify":
             sys.stdout.write("PICO_W_OK\n")
-            
+
         elif raw == "led 1":
             led.value(1)
             sys.stdout.write("LED_ON\n")
@@ -38,4 +39,10 @@ while True:
                 sys.stdout.write(f"FREQ_SET_{target_mhz}MHZ\n")
             except Exception:
                 sys.stdout.write("INVALID_FREQ\n")
-                
+
+        elif raw == "ram -f":
+            sys.stdout.write(f"{gc.mem_free() // 1024} KB\n")
+        elif raw == "ram -a":
+            sys.stdout.write(f"{gc.mem_alloc() // 1024} KB\n")
+        elif raw == "ram -t":
+            sys.stdout.write(f"{(gc.mem_free() + gc.mem_alloc()) // 1024} KB\n")
