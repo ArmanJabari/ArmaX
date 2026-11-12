@@ -2,6 +2,7 @@ import machine
 import sys
 import select
 import gc
+import os
 
 led = machine.Pin("LED", machine.Pin.OUT)
 sensor_temp = machine.ADC(4)
@@ -30,8 +31,7 @@ while True:
             temperature = 27 - (reading - 0.706) / 0.001721
             sys.stdout.write(f"{temperature:.1f} C\n")
         elif raw == "cpu -f":
-            freq_mhz = machine.freq() // 1000000
-            sys.stdout.write(f"{freq_mhz} MHZ\n")
+            sys.stdout.write(f"{machine.freq() // 1000000} MHZ\n")
         elif raw.startswith("cpu -f "):
             try:
                 target_mhz = int(raw.split()[2])
@@ -46,3 +46,13 @@ while True:
             sys.stdout.write(f"{gc.mem_alloc() // 1024} KB\n")
         elif raw == "ram -t":
             sys.stdout.write(f"{(gc.mem_free() + gc.mem_alloc()) // 1024} KB\n")
+
+        elif raw == "disk -f":
+            stat = os.statvfs('/')
+            sys.stdout.write(f"{(stat[0] * stat[3]) // 1024} KB\n")
+        elif raw == "disk -a":
+            stat = os.statvfs('/')
+            sys.stdout.write(f"{(stat[0] * (stat[2] - stat[3])) // 1024} KB\n")
+        elif raw == "disk -t":
+            stat = os.statvfs('/')
+            sys.stdout.write(f"{(stat[0] * stat[2]) // 1024} KB\n")
