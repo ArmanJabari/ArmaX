@@ -41,18 +41,18 @@ while True:
                 sys.stdout.write("INVALID_FREQ\n")
 
         elif raw == "ram -f":
-            sys.stdout.write(f"{gc.mem_free() // 1024} KB\n")
+            sys.stdout.write(f"{gc.mem_free() // 1024} KB ({(gc.mem_free() * 100) // (gc.mem_free() + gc.mem_alloc())}%)\n")
         elif raw == "ram -a":
-            sys.stdout.write(f"{gc.mem_alloc() // 1024} KB\n")
+            sys.stdout.write(f"{gc.mem_alloc() // 1024} KB ({(gc.mem_alloc() * 100) // (gc.mem_free() + gc.mem_alloc())}%)\n")
         elif raw == "ram -t":
             sys.stdout.write(f"{(gc.mem_free() + gc.mem_alloc()) // 1024} KB\n")
 
         elif raw == "disk -f":
             stat = os.statvfs('/')
-            sys.stdout.write(f"{(stat[0] * stat[3]) // 1024} KB\n")
+            sys.stdout.write(f"{(stat[0] * stat[3]) // 1024} KB ({(stat[3] * 100) // stat[2]}%)\n")
         elif raw == "disk -a":
             stat = os.statvfs('/')
-            sys.stdout.write(f"{(stat[0] * (stat[2] - stat[3])) // 1024} KB\n")
+            sys.stdout.write(f"{(stat[0] * (stat[2] - stat[3])) // 1024} KB ({((stat[2] - stat[3]) * 100) // stat[2]}%)\n")
         elif raw == "disk -t":
             stat = os.statvfs('/')
             sys.stdout.write(f"{(stat[0] * stat[2]) // 1024} KB\n")
