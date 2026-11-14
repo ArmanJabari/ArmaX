@@ -3,6 +3,9 @@ import sys
 import select
 import gc
 import os
+import time
+
+boot = time.ticks_ms()
 
 led = machine.Pin("LED", machine.Pin.OUT)
 sensor_temp = machine.ADC(4)
@@ -56,3 +59,12 @@ while True:
         elif raw == "disk -t":
             stat = os.statvfs('/')
             sys.stdout.write(f"{(stat[0] * stat[2]) // 1024} KB\n")
+
+        elif raw == "uptime -ms":
+            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot)}\n")
+        elif raw == "uptime -s":
+            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 1000}\n")
+        elif raw == "uptime -m":
+            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 60000}\n")
+        elif raw == "uptime -h":
+            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 3600000}\n")
