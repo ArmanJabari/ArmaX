@@ -5,6 +5,9 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -13,6 +16,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
 #include "font8x8.h"
+#include "FwInstaller.h"
 
 static LPDIRECT3D9           g_pD3D = NULL;
 static LPDIRECT3DDEVICE9     g_pd3dDevice = NULL;
@@ -65,73 +69,6 @@ static bool ResetDevice() {
         return false;
     ImGui_ImplDX9_CreateDeviceObjects();
     return true;
-}
-
-bool ConfigureSerialPort(HANDLE hSerial) {
-    DCB dcbSerialParams = { 0 };
-    dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-    if (!GetCommState(hSerial, &dcbSerialParams))
-        return false;
-
-    dcbSerialParams.BaudRate = CBR_115200;
-    dcbSerialParams.ByteSize = 8;
-    dcbSerialParams.StopBits = ONESTOPBIT;
-    dcbSerialParams.Parity = NOPARITY;
-    dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
-
-    if (!SetCommState(hSerial, &dcbSerialParams))
-        return false;
-
-    COMMTIMEOUTS timeouts = { 0 };
-    timeouts.ReadIntervalTimeout = 20;
-    timeouts.ReadTotalTimeoutConstant = 40;
-    timeouts.ReadTotalTimeoutMultiplier = 0;
-    timeouts.WriteTotalTimeoutConstant = 20;
-    timeouts.WriteTotalTimeoutMultiplier = 0;
-    SetCommTimeouts(hSerial, &timeouts);
-
-    return true;
-}
-
-HANDLE ScanAndConnectPico(std::string& foundPortName) {
-    char portPath[32];
-    for (int i = 1; i <= 32; i++) {
-        sprintf(portPath, "\\\\.\\COM%d", i);
-
-        HANDLE hSerial = CreateFileA(portPath, GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-        if (hSerial == INVALID_HANDLE_VALUE)
-            continue;
-
-        if (!ConfigureSerialPort(hSerial)) {
-            CloseHandle(hSerial);
-            continue;
-        }
-
-        PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
-
-        const char* ping = "IDENTIFY\r\n";
-        DWORD written = 0;
-        WriteFile(hSerial, ping, (DWORD)strlen(ping), &written, NULL);
-
-        Sleep(35);
-
-        char readBuf[64] = { 0 };
-        DWORD readBytes = 0;
-        ReadFile(hSerial, readBuf, sizeof(readBuf) - 1, &readBytes, NULL);
-
-        if (readBytes > 0 && strstr(readBuf, "PICO_W_OK") != NULL) {
-            char displayPort[16];
-            sprintf(displayPort, "COM%d", i);
-            foundPortName = displayPort;
-
-            COMMTIMEOUTS nonBlockingTimeouts = { MAXDWORD, 0, 0, 0, 0 };
-            SetCommTimeouts(hSerial, &nonBlockingTimeouts);
-            return hSerial;
-        }
-
-        CloseHandle(hSerial);
-    }
-    return INVALID_HANDLE_VALUE;
 }
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -223,7 +160,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     std::string connectedPort = "";
     HANDLE hSerial = INVALID_HANDLE_VALUE;
-    double lastScanTime = -10.0;
+
+    std::atomic<bool> stopWorker(false);
+    std::atomic<bool> scanRequested(true);
+    std::atomic<FwStatus> fwStatus(FwStatus::Finding);
+    std::mutex serialMutex;
+    HANDLE pendingSerial = INVALID_HANDLE_VALUE;
+    std::string pendingPort = "";
+
+    std::thread workerThread([&]() {
+        while (!stopWorker.load()) {
+            if (scanRequested.load()) {
+                std::string foundPort;
+                HANDLE h = FwInstaller::ScanOrInstall(foundPort, fwStatus);
+                if (h != INVALID_HANDLE_VALUE) {
+                    std::lock_guard<std::mutex> lock(serialMutex);
+                    pendingSerial = h;
+                    pendingPort = foundPort;
+                    scanRequested.store(false);
+                } else {
+                    for (int i = 0; i < 30 && !stopWorker.load(); i++) {
+                        Sleep(50);
+                    }
+                }
+            } else {
+                Sleep(50);
+            }
+        }
+    });
 
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
@@ -259,18 +223,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
         }
 
-        double currentTime = ImGui::GetTime();
-
         if (hSerial == INVALID_HANDLE_VALUE) {
-            if (currentTime - lastScanTime >= 1.5) {
-                lastScanTime = currentTime;
-                hSerial = ScanAndConnectPico(connectedPort);
-                if (hSerial != INVALID_HANDLE_VALUE) {
-                    history.clear();
-                    currentLine.clear();
-                    cursorPos = 0;
-                    incomingBuffer.clear();
-                }
+            std::lock_guard<std::mutex> lock(serialMutex);
+            if (pendingSerial != INVALID_HANDLE_VALUE) {
+                hSerial = pendingSerial;
+                connectedPort = pendingPort;
+                pendingSerial = INVALID_HANDLE_VALUE;
+                pendingPort.clear();
+                history.clear();
+                currentLine.clear();
+                cursorPos = 0;
+                incomingBuffer.clear();
             }
         } else {
             DWORD commErrors = 0;
@@ -278,6 +241,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (!ClearCommError(hSerial, &commErrors, &commStat)) {
                 CloseHandle(hSerial);
                 hSerial = INVALID_HANDLE_VALUE;
+                fwStatus.store(FwStatus::Finding);
+                scanRequested.store(true);
             } else {
                 char chunk[128];
                 DWORD bytesRead = 0;
@@ -285,6 +250,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 if (!ok) {
                     CloseHandle(hSerial);
                     hSerial = INVALID_HANDLE_VALUE;
+                    fwStatus.store(FwStatus::Finding);
+                    scanRequested.store(true);
                 } else if (bytesRead > 0) {
                     chunk[bytesRead] = '\0';
                     incomingBuffer.append(chunk, bytesRead);
@@ -375,6 +342,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     if (!ok) {
                         CloseHandle(hSerial);
                         hSerial = INVALID_HANDLE_VALUE;
+                        fwStatus.store(FwStatus::Finding);
+                        scanRequested.store(true);
                     }
                     while (history.size() > MAXHISTORY)
                         history.erase(history.begin());
@@ -402,8 +371,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ImVec2 o(floorf(vp->WorkPos.x + 8.0f), floorf(vp->WorkPos.y + 8.0f));
 
             if (hSerial == INVALID_HANDLE_VALUE) {
-                Font8x8::Draw(dl, ImVec2(o.x, o.y), "FINDING ", scale, white);
-                Font8x8::DrawSpinner(dl, ImVec2(o.x + 64.0f * scale, o.y), scale, white, 6.0f);
+                FwStatus status = fwStatus.load();
+                if (status == FwStatus::Installing) {
+                    Font8x8::Draw(dl, ImVec2(o.x, o.y), "INSTALLING ", scale, white);
+                    Font8x8::DrawSpinner(dl, ImVec2(o.x + 88.0f * scale, o.y), scale, white, 6.0f);
+                } else if (status == FwStatus::NoFirmware) {
+                    Font8x8::Draw(dl, ImVec2(o.x, o.y), "NO FW FILE ", scale, white);
+                    Font8x8::DrawSpinner(dl, ImVec2(o.x + 88.0f * scale, o.y), scale, white, 6.0f);
+                } else {
+                    Font8x8::Draw(dl, ImVec2(o.x, o.y), "FINDING ", scale, white);
+                    Font8x8::DrawSpinner(dl, ImVec2(o.x + 64.0f * scale, o.y), scale, white, 6.0f);
+                }
             } else {
                 std::vector<Row> rows;
                 for (const auto& entry : history) {
@@ -459,6 +437,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         HRESULT result = g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
         if (result == D3DERR_DEVICELOST)
             g_DeviceLost = true;
+    }
+
+    stopWorker.store(true);
+    if (workerThread.joinable())
+        workerThread.join();
+
+    if (pendingSerial != INVALID_HANDLE_VALUE) {
+        CloseHandle(pendingSerial);
     }
 
     ImGui_ImplDX9_Shutdown();
