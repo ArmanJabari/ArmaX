@@ -68,3 +68,66 @@ while True:
             sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 60000}\n")
         elif raw == "uptime -h":
             sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 3600000}\n")
+
+        elif raw == "ls":
+            entries = list(os.ilistdir())
+            if not entries:
+                sys.stdout.write("EMPTY\n")
+            else:
+                for entry in entries:
+                    full_name = entry[0].upper()
+                    if entry[1] == 0x4000:
+                        tag = "[DIR]"
+                        name = full_name
+                    else:
+                        if "." in full_name and not full_name.startswith("."):
+                            name, ext = full_name.rsplit(".", 1)
+                            tag = f"[{ext[:4]}]"
+                        else:
+                            name = full_name
+                            tag = "[FILE]"
+
+                    if len(name) > 20:
+                        name = name[:17] + "..."
+
+                    tag_padded = tag + " " * (7 - len(tag))
+
+                    if entry[1] == 0x4000:
+                        sys.stdout.write(f"{tag_padded}{name}/\n")
+                    else:
+                        sys.stdout.write(f"{tag_padded}{name} ({entry[3]}B)\n")
+
+        elif raw.startswith("mk -f ") or raw.startswith("mk -d "):
+            parts = raw.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                sys.stdout.write("MISSING_NAME\n")
+            else:
+                name = parts[2].strip()
+                if len(name) > 20:
+                    sys.stdout.write("NAME_TOO_LONG\n")
+                else:
+                    try:
+                        if parts[1] == "-f":
+                            open(name, "w").close()
+                            sys.stdout.write("FILE_CREATED\n")
+                        else:
+                            os.mkdir(name)
+                            sys.stdout.write("DIR_CREATED\n")
+                    except Exception:
+                        sys.stdout.write("MK_FAILED\n")
+
+        elif raw.startswith("rm -f ") or raw.startswith("rm -d "):
+            parts = raw.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                sys.stdout.write("MISSING_NAME\n")
+            else:
+                name = parts[2].strip()
+                try:
+                    if parts[1] == "-f":
+                        os.remove(name)
+                        sys.stdout.write("FILE_REMOVED\n")
+                    else:
+                        os.rmdir(name)
+                        sys.stdout.write("DIR_REMOVED\n")
+                except Exception:
+                    sys.stdout.write("RM_FAILED\n")
