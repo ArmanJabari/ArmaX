@@ -14,6 +14,15 @@ conversion_factor = 3.3 / 65535
 poller = select.poll()
 poller.register(sys.stdin, select.POLLIN)
 
+def get_short_path():
+    cwd = os.getcwd().upper()
+    if cwd == "/":
+        return "ROOT:/"
+    parts = [p for p in cwd.split("/") if p]
+    if len(parts) <= 2:
+        return "ROOT:/" + "/".join(parts)
+    return "ROOT:/.../" + parts[-2] + "/" + parts[-1]
+
 while True:
     events = poller.poll(50)
     if events:
@@ -69,7 +78,20 @@ while True:
         elif raw == "uptime -h":
             sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 3600000}\n")
 
+        elif raw.startswith("cd "):
+            parts = raw.split(None, 1)
+            if len(parts) < 2 or not parts[1].strip():
+                sys.stdout.write("MISSING_PATH\n")
+            else:
+                path = parts[1].strip()
+                try:
+                    os.chdir(path)
+                    sys.stdout.write("DIR_CHANGED\n")
+                except Exception:
+                    sys.stdout.write("INVALID_PATH\n")
+
         elif raw == "ls":
+            sys.stdout.write(get_short_path() + "\n")
             entries = list(os.ilistdir())
             if not entries:
                 sys.stdout.write("EMPTY\n")
@@ -131,3 +153,17 @@ while True:
                         sys.stdout.write("DIR_REMOVED\n")
                 except Exception:
                     sys.stdout.write("RM_FAILED\n")
+
+        elif raw.startswith("write "):
+            parts = raw.split(None, 2)
+            if len(parts) < 3 or not parts[1].strip():
+                sys.stdout.write("INVALID_ARGS\n")
+            else:
+                name = parts[1].strip()
+                text = parts[2].replace("\\n", "\n").replace("\\t", "\t")
+                try:
+                    with open(name, "w") as f:
+                        f.write(text)
+                    sys.stdout.write("FILE_WRITTEN\n")
+                except Exception:
+                    sys.stdout.write("WRITE_FAILED\n")
