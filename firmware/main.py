@@ -26,7 +26,8 @@ def get_short_path():
 while True:
     events = poller.poll(50)
     if events:
-        raw = sys.stdin.readline().strip().lower()
+        line = sys.stdin.readline().strip()
+        raw = line.lower()
 
         if raw == "identify":
             sys.stdout.write("PICO_W_OK\n")
@@ -167,3 +168,71 @@ while True:
                     sys.stdout.write("FILE_WRITTEN\n")
                 except Exception:
                     sys.stdout.write("WRITE_FAILED\n")
+
+        elif raw.startswith("__stat__ "):
+            fname = line[9:].strip()
+            if not fname:
+                sys.stdout.write("STAT_ERR\n")
+            else:
+                try:
+                    st = os.statvfs("/")
+                    fb = st[0] * st[3]
+                    try:
+                        es = os.stat(fname)[6]
+                        ex = 1
+                    except Exception:
+                        es = 0
+                        ex = 0
+                    sys.stdout.write(f"STAT:{fb}:{ex}:{es}\n")
+                except Exception:
+                    sys.stdout.write("STAT_ERR\n")
+
+        elif raw.startswith("__put__ "):
+            parts = line.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                sys.stdout.write("PUT_ERR\n")
+            else:
+                fname = parts[2].strip()
+                f = None
+                try:
+                    total = int(parts[1])
+                    f = open(fname, "wb")
+                    sys.stdout.write("PUT_READY\n")
+                    written = 0
+                    ok = True
+                    while written < total:
+                        if not poller.poll(3000):
+                            ok = False
+                            break
+                        chunk_line = sys.stdin.readline()
+                        if not chunk_line:
+                            ok = False
+                            break
+                        hex_str = chunk_line.strip()
+                        if not hex_str:
+                            continue
+                        raw_bytes = bytes.fromhex(hex_str)
+                        f.write(raw_bytes)
+                        written += len(raw_bytes)
+                        sys.stdout.write("ACK\n")
+                    f.close()
+                    f = None
+                    if ok and written == total:
+                        sys.stdout.write("PUT_OK\n")
+                    else:
+                        try:
+                            os.remove(fname)
+                        except Exception:
+                            pass
+                        sys.stdout.write("PUT_ERR\n")
+                except Exception:
+                    if f is not None:
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
+                    try:
+                        os.remove(fname)
+                    except Exception:
+                        pass
+                    sys.stdout.write("PUT_ERR\n")
