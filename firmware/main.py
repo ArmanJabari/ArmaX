@@ -121,39 +121,37 @@ while True:
                         sys.stdout.write(f"{tag_padded}{name} ({entry[3]}B)\n")
 
         elif raw.startswith("mk -f ") or raw.startswith("mk -d "):
-            parts = raw.split(None, 2)
-            if len(parts) < 3 or not parts[2].strip():
+            parts = raw.split()
+            if len(parts) < 3:
                 sys.stdout.write("MISSING_NAME\n")
             else:
-                name = parts[2].strip()
-                if len(name) > 20:
-                    sys.stdout.write("NAME_TOO_LONG\n")
-                else:
-                    try:
-                        if parts[1] == "-f":
-                            open(name, "w").close()
-                            sys.stdout.write("FILE_CREATED\n")
-                        else:
-                            os.mkdir(name)
-                            sys.stdout.write("DIR_CREATED\n")
-                    except Exception:
-                        sys.stdout.write("MK_FAILED\n")
+                mode = parts[1]
+                for name in parts[2:]:
+                    if len(name) > 20:
+                        sys.stdout.write(f"MK_FAILED: {name.upper()}\n")
+                    else:
+                        try:
+                            if mode == "-f":
+                                open(name, "w").close()
+                            else:
+                                os.mkdir(name)
+                        except Exception:
+                            sys.stdout.write(f"MK_FAILED: {name.upper()}\n")
 
         elif raw.startswith("rm -f ") or raw.startswith("rm -d "):
-            parts = raw.split(None, 2)
-            if len(parts) < 3 or not parts[2].strip():
+            parts = raw.split()
+            if len(parts) < 3:
                 sys.stdout.write("MISSING_NAME\n")
             else:
-                name = parts[2].strip()
-                try:
-                    if parts[1] == "-f":
-                        os.remove(name)
-                        sys.stdout.write("FILE_REMOVED\n")
-                    else:
-                        os.rmdir(name)
-                        sys.stdout.write("DIR_REMOVED\n")
-                except Exception:
-                    sys.stdout.write("RM_FAILED\n")
+                mode = parts[1]
+                for name in parts[2:]:
+                    try:
+                        if mode == "-f":
+                            os.remove(name)
+                        else:
+                            os.rmdir(name)
+                    except Exception:
+                        sys.stdout.write(f"RM_FAILED: {name.upper()}\n")
 
         elif raw.startswith("write "):
             parts = raw.split(None, 2)
