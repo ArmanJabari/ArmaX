@@ -169,6 +169,46 @@ while True:
                 except Exception:
                     sys.stdout.write("WRITE_FAILED\n")
 
+        elif raw == "run" or raw.startswith("run "):
+            parts = line.split(None, 1)
+            if len(parts) < 2 or not parts[1].strip():
+                sys.stdout.write("MISSING_NAME\n")
+            else:
+                req_name = parts[1].strip()
+                fname = None
+                for entry in os.ilistdir():
+                    if not (entry[1] & 0x4000) and entry[0].lower() == req_name.lower():
+                        fname = entry[0]
+                        break
+                if fname is None:
+                    sys.stdout.write("FILE_NOT_FOUND\n")
+                else:
+                    try:
+                        with open(fname, "r") as f:
+                            code = f.read()
+                        while poller.poll(0):
+                            sys.stdin.read(1)
+                        gc.collect()
+                        sys.stdout.write("__run_start__\n")
+                        def _run_input(prompt=""):
+                            if prompt:
+                                sys.stdout.write(str(prompt))
+                            s = sys.stdin.readline()
+                            if not s or "\x03" in s:
+                                raise KeyboardInterrupt
+                            return s.rstrip("\r\n")
+                        env = {"__name__": "__main__", "input": _run_input}
+                        try:
+                            exec(code, env)
+                        except KeyboardInterrupt:
+                            sys.stdout.write("STOPPED\n")
+                        except Exception as e:
+                            sys.stdout.write(f"ERR: {e}\n")
+                        sys.stdout.write("__run_end__\n")
+                        gc.collect()
+                    except Exception:
+                        sys.stdout.write("RUN_FAILED\n")
+
         elif raw.startswith("__stat__ "):
             fname = line[9:].strip()
             if not fname:
