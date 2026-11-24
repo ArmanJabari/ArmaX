@@ -28,6 +28,38 @@ PROTECTED = ("main.py",)
 def is_protected(name):
     return name.rstrip("/").split("/")[-1].lower() in PROTECTED
 
+def format_entry(entry):
+    full_name = entry[0].upper()
+    if entry[1] == 0x4000:
+        tag = "[DIR]"
+        name = full_name
+    else:
+        if "." in full_name and not full_name.startswith("."):
+            name, ext = full_name.rsplit(".", 1)
+            tag = f"[{ext[:4]}]"
+        else:
+            name = full_name
+            tag = "[FILE]"
+
+    if len(name) > 20:
+        name = name[:17] + "..."
+
+    tag_padded = tag + " " * (7 - len(tag))
+
+    if entry[1] == 0x4000:
+        return f"{tag_padded}{name}/\n"
+    return f"{tag_padded}{name} ({entry[3]}B)\n"
+
+def render_ls_page(entries, page, total_pages):
+    sys.stdout.write(get_short_path() + "\n")
+    start = page * 17
+    chunk = entries[start:start + 17]
+    for entry in chunk:
+        sys.stdout.write(format_entry(entry))
+    for _ in range(17 - len(chunk)):
+        sys.stdout.write(" \n")
+    sys.stdout.write(f"[{page + 1:02d}|{total_pages:02d}] (B)ACK (N)EXT (Q)UIT: ")
+
 while True:
     events = poller.poll(50)
     if events:
@@ -92,33 +124,34 @@ while True:
                     sys.stdout.write("INVALID_PATH\n")
 
         elif raw == "ls":
-            sys.stdout.write(get_short_path() + "\n")
             entries = [e for e in os.ilistdir() if not is_protected(e[0])]
             if not entries:
+                sys.stdout.write(get_short_path() + "\n")
                 sys.stdout.write("EMPTY\n")
-            else:
+            elif len(entries) <= 17:
+                sys.stdout.write(get_short_path() + "\n")
                 for entry in entries:
-                    full_name = entry[0].upper()
-                    if entry[1] == 0x4000:
-                        tag = "[DIR]"
-                        name = full_name
-                    else:
-                        if "." in full_name and not full_name.startswith("."):
-                            name, ext = full_name.rsplit(".", 1)
-                            tag = f"[{ext[:4]}]"
-                        else:
-                            name = full_name
-                            tag = "[FILE]"
-
-                    if len(name) > 20:
-                        name = name[:17] + "..."
-
-                    tag_padded = tag + " " * (7 - len(tag))
-
-                    if entry[1] == 0x4000:
-                        sys.stdout.write(f"{tag_padded}{name}/\n")
-                    else:
-                        sys.stdout.write(f"{tag_padded}{name} ({entry[3]}B)\n")
+                    sys.stdout.write(format_entry(entry))
+            else:
+                total_pages = (len(entries) + 16) // 17
+                page = 0
+                sys.stdout.write("__run_start__\n")
+                render_ls_page(entries, page, total_pages)
+                while True:
+                    nav = sys.stdin.readline()
+                    if not nav or "\x03" in nav:
+                        break
+                    cmd = nav.strip().lower()
+                    if cmd == "q":
+                        break
+                    elif cmd == "n":
+                        if page + 1 < total_pages:
+                            page += 1
+                    elif cmd == "b":
+                        if page > 0:
+                            page -= 1
+                    render_ls_page(entries, page, total_pages)
+                sys.stdout.write("__run_end__\n")
 
         elif raw.startswith("mk -f ") or raw.startswith("mk -d "):
             parts = raw.split()
