@@ -75,14 +75,9 @@ while True:
             stat = os.statvfs('/')
             sys.stdout.write(f"{(stat[0] * stat[2]) // 1024} KB\n")
 
-        elif raw == "uptime -ms":
-            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot)}\n")
-        elif raw == "uptime -s":
-            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 1000}\n")
-        elif raw == "uptime -m":
-            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 60000}\n")
-        elif raw == "uptime -h":
-            sys.stdout.write(f"{time.ticks_diff(time.ticks_ms(), boot) // 3600000}\n")
+        elif raw == "uptime":
+            total = time.ticks_diff(time.ticks_ms(), boot) // 1000
+            sys.stdout.write(f"{total // 3600:02d}:{(total // 60) % 60:02d}:{total % 60:02d}\n")
 
         elif raw.startswith("cd "):
             parts = raw.split(None, 1)
