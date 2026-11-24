@@ -19,6 +19,7 @@
 #include "font8x8.h"
 #include "FwInstaller.h"
 #include "FileUpload.h"
+#include "History.h"
 
 static LPDIRECT3D9           g_pD3D = NULL;
 static LPDIRECT3DDEVICE9     g_pd3dDevice = NULL;
@@ -176,6 +177,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string connectedPort = "";
     HANDLE hSerial = INVALID_HANDLE_VALUE;
     FileUpload fileUpload;
+    CmdHistory cmdHistory;
     bool scriptRunning = false;
 
     std::atomic<bool> stopWorker(false);
@@ -248,6 +250,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (hSerial != INVALID_HANDLE_VALUE && !fileUpload.IsUploading() && !scriptRunning && uploadReady) {
                 std::string uploadCmd;
                 if (fileUpload.OnFileDropped(dropped.c_str(), hSerial, uploadCmd)) {
+                    cmdHistory.ResetBrowse();
                     currentLine = uploadCmd;
                     cursorPos = currentLine.length();
                 }
@@ -455,6 +458,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     cursorPos = currentLine.length();
                 }
 
+                if (!scriptRunning && ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+                    std::string recalled;
+                    if (cmdHistory.Prev(currentLine, recalled)) {
+                        currentLine = recalled;
+                        cursorPos = currentLine.length();
+                    }
+                }
+
+                if (!scriptRunning && ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+                    std::string recalled;
+                    if (cmdHistory.Next(currentLine, recalled)) {
+                        currentLine = recalled;
+                        cursorPos = currentLine.length();
+                    }
+                }
+
                 if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && cursorPos > 0) {
                     currentLine.erase(cursorPos - 1, 1);
                     cursorPos--;
@@ -463,11 +482,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 if (!scriptRunning && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                     if (fileUpload.HasPendingDrop())
                         fileUpload.Reset();
+                    cmdHistory.ResetBrowse();
                     currentLine.clear();
                     cursorPos = 0;
                 }
 
                 if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+                    cmdHistory.ResetBrowse();
                     if (scriptRunning) {
                         std::string fullLine = incomingBuffer + currentLine;
                         history.push_back(fullLine);
@@ -487,6 +508,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         currentLine.clear();
                         cursorPos = 0;
                     } else if (fileUpload.HasPendingDrop() && fileUpload.MatchesCommand(currentLine)) {
+                        cmdHistory.Push("UPLOAD");
                         if (fileUpload.IsBusy()) {
                             fileUpload.OnEnterPressed(hSerial);
                         } else {
@@ -502,6 +524,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     } else {
                         if (fileUpload.HasPendingDrop())
                             fileUpload.Reset();
+
+                        cmdHistory.Push(currentLine.compare(0, 7, "UPLOAD ") == 0 ? std::string("UPLOAD") : currentLine);
 
                         if (currentLine == "CLEAR") {
                             history.clear();
