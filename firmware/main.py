@@ -23,6 +23,11 @@ def get_short_path():
         return "ROOT:/" + "/".join(parts)
     return "ROOT:/.../" + parts[-2] + "/" + parts[-1]
 
+PROTECTED = ("main.py",)
+
+def is_protected(name):
+    return name.rstrip("/").split("/")[-1].lower() in PROTECTED
+
 while True:
     events = poller.poll(50)
     if events:
@@ -93,7 +98,7 @@ while True:
 
         elif raw == "ls":
             sys.stdout.write(get_short_path() + "\n")
-            entries = list(os.ilistdir())
+            entries = [e for e in os.ilistdir() if not is_protected(e[0])]
             if not entries:
                 sys.stdout.write("EMPTY\n")
             else:
@@ -127,7 +132,7 @@ while True:
             else:
                 mode = parts[1]
                 for name in parts[2:]:
-                    if len(name) > 20:
+                    if len(name) > 20 or is_protected(name):
                         sys.stdout.write(f"MK_FAILED: {name.upper()}\n")
                     else:
                         try:
@@ -145,6 +150,9 @@ while True:
             else:
                 mode = parts[1]
                 for name in parts[2:]:
+                    if is_protected(name):
+                        sys.stdout.write(f"RM_FAILED: {name.upper()}\n")
+                        continue
                     try:
                         if mode == "-f":
                             os.remove(name)
@@ -160,12 +168,15 @@ while True:
             else:
                 name = parts[1].strip()
                 text = parts[2].replace("\\n", "\n").replace("\\t", "\t")
-                try:
-                    with open(name, "w") as f:
-                        f.write(text)
-                    sys.stdout.write("FILE_WRITTEN\n")
-                except Exception:
+                if is_protected(name):
                     sys.stdout.write("WRITE_FAILED\n")
+                else:
+                    try:
+                        with open(name, "w") as f:
+                            f.write(text)
+                        sys.stdout.write("FILE_WRITTEN\n")
+                    except Exception:
+                        sys.stdout.write("WRITE_FAILED\n")
 
         elif raw == "run" or raw.startswith("run "):
             parts = line.split(None, 1)
