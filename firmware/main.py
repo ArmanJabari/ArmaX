@@ -207,6 +207,16 @@ while True:
                     except Exception:
                         sys.stdout.write("RUN_FAILED\n")
 
+        elif raw == "sys -u":
+            try:
+                os.remove("/main.py")
+            except Exception:
+                sys.stdout.write("UPDATE_FAILED\n")
+            else:
+                sys.stdout.write("UPDATING\n")
+                time.sleep_ms(50)
+                machine.reset()
+
         elif raw.startswith("__stat__ "):
             fname = line[9:].strip()
             if not fname:
