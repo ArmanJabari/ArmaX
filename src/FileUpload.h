@@ -13,33 +13,19 @@
 
 class FileUpload {
 public:
-    enum class State {
-        Idle,
-        Querying,
-        Ready,
-        ConfirmOverwrite,
-        Uploading
-    };
-
     enum class Event {
         None,
-        FileTooLarge,
-        AskOverwrite,
-        UploadSuccess,
-        UploadFailed,
+        Done,
         Disconnected
     };
 
     FileUpload()
-        : state(State::Idle),
-          pendingEvent(Event::None),
-          autoSubmit(false),
+        : uploading(false),
           stopRequested(false),
-          fileSize(0),
-          queryOk(false),
-          freeBytes(0),
-          fileExists(false),
-          existingSize(0) {}
+          pendingDrop(false),
+          pendingEvent(Event::None),
+          staged(false),
+          fileSize(0) {}
 
     ~FileUpload() {
         Stop();
@@ -50,62 +36,50 @@ public:
         if (worker.joinable())
             worker.join();
         stopRequested.store(false);
+        uploading.store(false);
     }
 
     void Reset() {
         Stop();
         std::lock_guard<std::mutex> lock(mtx);
-        state.store(State::Idle);
+        pendingDrop.store(false);
         pendingEvent.store(Event::None);
-        autoSubmit.store(false);
-        filePath.clear();
-        originalName.clear();
+        staged = false;
+        localPath.clear();
+        fileName.clear();
         upperCommand.clear();
         fileSize = 0;
-        queryOk = false;
-        freeBytes = 0;
-        fileExists = false;
-        existingSize = 0;
-    }
-
-    bool IsBusy() const {
-        State s = state.load();
-        return s == State::Querying || s == State::Uploading;
     }
 
     bool IsUploading() const {
-        return state.load() == State::Uploading;
-    }
-
-    bool IsConfirmingOverwrite() const {
-        return state.load() == State::ConfirmOverwrite;
+        return uploading.load();
     }
 
     bool HasPendingDrop() const {
-        State s = state.load();
-        return s == State::Querying || s == State::Ready || s == State::ConfirmOverwrite;
+        return pendingDrop.load();
     }
 
     bool MatchesCommand(const std::string& line) const {
         std::lock_guard<std::mutex> lock(mtx);
-        return !upperCommand.empty() && line == upperCommand;
+        return pendingDrop.load() && !upperCommand.empty() && line == upperCommand;
     }
 
-    bool OnFileDropped(const char* droppedPath, HANDLE hSerial, std::string& outCommandLine) {
-        if (!droppedPath || hSerial == INVALID_HANDLE_VALUE || IsUploading())
+    Event PollEvent() {
+        return pendingEvent.exchange(Event::None);
+    }
+
+    bool StageFile(const char* path, std::string& outCommandLine) {
+        if (!path || IsUploading())
             return false;
 
-        DWORD attrs = GetFileAttributesA(droppedPath);
+        DWORD attrs = GetFileAttributesA(path);
         if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY))
             return false;
 
-        std::string full(droppedPath);
+        std::string full(path);
         size_t slash = full.find_last_of("\\/");
         std::string name = (slash == std::string::npos) ? full : full.substr(slash + 1);
         if (name.empty())
-            return false;
-
-        if (_stricmp(name.c_str(), "main.py") == 0)
             return false;
 
         std::ifstream f(full, std::ios::binary | std::ios::ate);
@@ -123,117 +97,63 @@ public:
                 c = static_cast<char>(c - 32);
         }
 
-        Stop();
-
         {
             std::lock_guard<std::mutex> lock(mtx);
-            filePath = full;
-            originalName = name;
+            localPath = full;
+            fileName = name;
             upperCommand = "UPLOAD " + upperName;
             fileSize = sizeVal;
-            queryOk = false;
-            freeBytes = 0;
-            fileExists = false;
-            existingSize = 0;
-            pendingEvent.store(Event::None);
-            autoSubmit.store(false);
-            state.store(State::Querying);
+            staged = true;
+            pendingDrop.store(true);
             outCommandLine = upperCommand;
         }
 
-        worker = std::thread(&FileUpload::RunQuery, this, hSerial);
         return true;
     }
 
-    void OnEnterPressed(HANDLE hSerial) {
-        State s = state.load();
-        if (s == State::Querying) {
-            autoSubmit.store(true);
-            return;
+    bool ConsumeDropCommand(std::string& outDropCmd) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!staged || !pendingDrop.load())
+            return false;
+        pendingDrop.store(false);
+        outDropCmd = "__drop__ " + std::to_string(fileSize) + " " + fileName + "\n";
+        return true;
+    }
+
+    bool StartUpload(HANDLE hSerial) {
+        if (hSerial == INVALID_HANDLE_VALUE || IsUploading())
+            return false;
+
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (!staged)
+                return false;
         }
-        if (s == State::Ready) {
-            EvaluateQueryResult(hSerial);
-        }
-    }
 
-    void OnConfirmYes(HANDLE hSerial) {
-        if (state.load() != State::ConfirmOverwrite)
-            return;
-        StartUpload(hSerial);
-    }
+        if (worker.joinable())
+            worker.join();
 
-    void OnConfirmNo() {
-        if (state.load() != State::ConfirmOverwrite)
-            return;
-        state.store(State::Ready);
-    }
-
-    Event PollEvent() {
-        return pendingEvent.exchange(Event::None);
+        stopRequested.store(false);
+        pendingEvent.store(Event::None);
+        uploading.store(true);
+        worker = std::thread(&FileUpload::RunUpload, this, hSerial);
+        return true;
     }
 
 private:
-    std::atomic<State> state;
-    std::atomic<Event> pendingEvent;
-    std::atomic<bool> autoSubmit;
+    std::atomic<bool> uploading;
     std::atomic<bool> stopRequested;
+    std::atomic<bool> pendingDrop;
+    std::atomic<Event> pendingEvent;
 
     mutable std::mutex mtx;
     std::thread worker;
 
-    std::string filePath;
-    std::string originalName;
+    bool staged;
+    std::string localPath;
+    std::string fileName;
     std::string upperCommand;
     uint64_t fileSize;
-
-    bool queryOk;
-    uint64_t freeBytes;
-    bool fileExists;
-    uint64_t existingSize;
-
-    void EvaluateQueryResult(HANDLE hSerial) {
-        bool ok = false;
-        uint64_t fSize = 0;
-        uint64_t freeB = 0;
-        bool exists = false;
-        uint64_t exSize = 0;
-
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            ok = queryOk;
-            fSize = fileSize;
-            freeB = freeBytes;
-            exists = fileExists;
-            exSize = existingSize;
-        }
-
-        if (!ok) {
-            state.store(State::Idle);
-            pendingEvent.store(Event::UploadFailed);
-            return;
-        }
-
-        if (fSize > freeB + exSize) {
-            state.store(State::Idle);
-            pendingEvent.store(Event::FileTooLarge);
-            return;
-        }
-
-        if (exists) {
-            state.store(State::ConfirmOverwrite);
-            pendingEvent.store(Event::AskOverwrite);
-            return;
-        }
-
-        StartUpload(hSerial);
-    }
-
-    void StartUpload(HANDLE hSerial) {
-        if (worker.joinable())
-            worker.join();
-        state.store(State::Uploading);
-        worker = std::thread(&FileUpload::RunUpload, this, hSerial);
-    }
 
     static void SetBlockingTimeouts(HANDLE hSerial, bool blocking) {
         COMMTIMEOUTS timeouts = { 0 };
@@ -302,93 +222,34 @@ private:
         return false;
     }
 
-    void RunQuery(HANDLE hSerial) {
-        std::string targetName;
+    void RunUpload(HANDLE hSerial) {
+        std::string pathCopy;
         {
             std::lock_guard<std::mutex> lock(mtx);
-            targetName = originalName;
+            pathCopy = localPath;
+            staged = false;
         }
 
         bool disconnected = false;
-        bool ok = false;
-        uint64_t freeB = 0;
-        bool exists = false;
-        uint64_t exSize = 0;
-
         SetBlockingTimeouts(hSerial, true);
         PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
 
-        std::string cmd = "__stat__ " + targetName + "\n";
-        if (WriteAll(hSerial, cmd, disconnected)) {
-            std::string resp;
-            if (ReadLine(hSerial, 1500, resp, disconnected)) {
-                if (resp.compare(0, 5, "STAT:") == 0) {
-                    unsigned long long parsedFree = 0;
-                    int parsedEx = 0;
-                    unsigned long long parsedExSize = 0;
-                    if (sscanf(resp.c_str(), "STAT:%llu:%d:%llu", &parsedFree, &parsedEx, &parsedExSize) == 3) {
-                        freeB = static_cast<uint64_t>(parsedFree);
-                        exists = (parsedEx == 1);
-                        exSize = static_cast<uint64_t>(parsedExSize);
-                        ok = true;
-                    }
-                }
-            }
-        }
-
-        SetBlockingTimeouts(hSerial, false);
-
-        if (stopRequested.load())
-            return;
-
-        if (disconnected) {
-            state.store(State::Idle);
-            pendingEvent.store(Event::Disconnected);
-            return;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            queryOk = ok;
-            freeBytes = freeB;
-            fileExists = exists;
-            existingSize = exSize;
-        }
-
-        state.store(State::Ready);
-
-        if (autoSubmit.exchange(false))
-            EvaluateQueryResult(hSerial);
-    }
-
-    void RunUpload(HANDLE hSerial) {
-        std::string localPath;
-        std::string targetName;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            localPath = filePath;
-            targetName = originalName;
-        }
-
-        std::ifstream file(localPath, std::ios::binary);
+        std::ifstream file(pathCopy, std::ios::binary);
         if (!file.is_open()) {
-            state.store(State::Idle);
-            pendingEvent.store(Event::UploadFailed);
+            WriteAll(hSerial, "PUT_ABORT\n", disconnected);
+            SetBlockingTimeouts(hSerial, false);
+            uploading.store(false);
+            if (!stopRequested.load())
+                pendingEvent.store(disconnected ? Event::Disconnected : Event::Done);
             return;
         }
+
         std::vector<unsigned char> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         file.close();
 
-        bool disconnected = false;
-        bool success = false;
-
-        SetBlockingTimeouts(hSerial, true);
-        PurgeComm(hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR);
-
-        std::string header = "__put__ " + std::to_string(data.size()) + " " + targetName + "\n";
-        if (WriteAll(hSerial, header, disconnected)) {
+        if (WriteAll(hSerial, "PUT_GO\n", disconnected)) {
             std::string resp;
-            if (ReadLine(hSerial, 2000, resp, disconnected) && resp == "PUT_READY") {
+            if (ReadLine(hSerial, 2500, resp, disconnected) && resp == "__put_ready__") {
                 bool transferOk = true;
                 const size_t chunkSize = 64;
                 char hexPair[3];
@@ -412,7 +273,7 @@ private:
                     }
 
                     std::string ack;
-                    if (!ReadLine(hSerial, 2000, ack, disconnected) || ack != "ACK") {
+                    if (!ReadLine(hSerial, 2500, ack, disconnected) || ack != "__ack__") {
                         transferOk = false;
                         break;
                     }
@@ -420,26 +281,17 @@ private:
 
                 if (transferOk && !stopRequested.load() && !disconnected) {
                     std::string finalResp;
-                    if (ReadLine(hSerial, 2500, finalResp, disconnected) && finalResp == "PUT_OK") {
-                        success = true;
-                    }
+                    ReadLine(hSerial, 3000, finalResp, disconnected);
                 }
             }
         }
 
         SetBlockingTimeouts(hSerial, false);
+        uploading.store(false);
 
         if (stopRequested.load())
             return;
 
-        state.store(State::Idle);
-
-        if (disconnected) {
-            pendingEvent.store(Event::Disconnected);
-        } else if (success) {
-            pendingEvent.store(Event::UploadSuccess);
-        } else {
-            pendingEvent.store(Event::UploadFailed);
-        }
+        pendingEvent.store(disconnected ? Event::Disconnected : Event::Done);
     }
 };

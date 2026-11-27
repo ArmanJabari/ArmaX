@@ -14,6 +14,8 @@ conversion_factor = 3.3 / 65535
 poller = select.poll()
 poller.register(sys.stdin, select.POLLIN)
 
+PROTECTED = ("main.py",)
+
 def get_short_path():
     cwd = os.getcwd().upper()
     if cwd == "/":
@@ -23,10 +25,12 @@ def get_short_path():
         return "ROOT:/" + "/".join(parts)
     return "ROOT:/.../" + parts[-2] + "/" + parts[-1]
 
-PROTECTED = ("main.py",)
-
 def is_protected(name):
     return name.rstrip("/").split("/")[-1].lower() in PROTECTED
+
+def drain_stdin():
+    while poller.poll(0):
+        sys.stdin.read(1)
 
 def format_entry(entry):
     full_name = entry[0].upper()
@@ -51,6 +55,7 @@ def format_entry(entry):
     return f"{tag_padded}{name} ({entry[3]}B)\n"
 
 def render_ls_page(entries, page, total_pages):
+    sys.stdout.write("__clear__\n")
     sys.stdout.write(get_short_path() + "\n")
     start = page * 17
     chunk = entries[start:start + 17]
@@ -58,7 +63,85 @@ def render_ls_page(entries, page, total_pages):
         sys.stdout.write(format_entry(entry))
     for _ in range(17 - len(chunk)):
         sys.stdout.write(" \n")
-    sys.stdout.write(f"[{page + 1:02d}|{total_pages:02d}] (B)ACK (N)EXT (Q)UIT: ")
+    sys.stdout.write(f"[{page + 1:02d}|{total_pages:02d}] (B)ACK (N)EXT (Q)UIT\n")
+
+def confirm_prompt(msg):
+    drain_stdin()
+    sys.stdout.write(msg + "\n")
+    sys.stdout.write("__key_start__\n")
+    result = False
+    try:
+        while True:
+            ch = sys.stdin.read(1)
+            if not ch or ch == "\x03":
+                break
+            c = ch.lower()
+            if c == "y":
+                result = True
+                break
+            elif c == "n":
+                break
+    except KeyboardInterrupt:
+        result = False
+    finally:
+        sys.stdout.write("__key_end__\n")
+    return result
+
+def receive_file(fname, total):
+    drain_stdin()
+    sys.stdout.write("__send_file__\n")
+    if not poller.poll(3000):
+        sys.stdout.write("UPLOAD FAILED\n")
+        return
+    go = sys.stdin.readline().strip()
+    if go != "PUT_GO":
+        sys.stdout.write("UPLOAD FAILED\n")
+        return
+    f = None
+    try:
+        f = open(fname, "wb")
+        sys.stdout.write("__put_ready__\n")
+        written = 0
+        ok = True
+        while written < total:
+            if not poller.poll(3000):
+                ok = False
+                break
+            chunk_line = sys.stdin.readline()
+            if not chunk_line:
+                ok = False
+                break
+            hex_str = chunk_line.strip()
+            if not hex_str:
+                continue
+            raw_bytes = bytes.fromhex(hex_str)
+            f.write(raw_bytes)
+            written += len(raw_bytes)
+            sys.stdout.write("__ack__\n")
+        f.close()
+        f = None
+        if ok and written == total:
+            sys.stdout.write("__put_ok__\n")
+            sys.stdout.write("UPLOAD WAS SUCCESSFUL\n")
+        else:
+            try:
+                os.remove(fname)
+            except Exception:
+                pass
+            sys.stdout.write("__put_err__\n")
+            sys.stdout.write("UPLOAD FAILED\n")
+    except Exception:
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+        try:
+            os.remove(fname)
+        except Exception:
+            pass
+        sys.stdout.write("__put_err__\n")
+        sys.stdout.write("UPLOAD FAILED\n")
 
 while True:
     events = poller.poll(50)
@@ -68,6 +151,9 @@ while True:
 
         if raw == "identify":
             sys.stdout.write("PICO_W_OK\n")
+
+        elif raw == "clear":
+            sys.stdout.write("__clear__\n")
 
         elif raw == "led 1":
             led.value(1)
@@ -85,8 +171,11 @@ while True:
         elif raw.startswith("cpu -f "):
             try:
                 target_mhz = int(raw.split()[2])
-                machine.freq(target_mhz * 1000000)
-                sys.stdout.write(f"FREQ_SET_{target_mhz}MHZ\n")
+                if 48 <= target_mhz <= 250:
+                    machine.freq(target_mhz * 1000000)
+                    sys.stdout.write(f"FREQ_SET_{target_mhz}MHZ\n")
+                else:
+                    sys.stdout.write("INVALID_FREQ\n")
             except Exception:
                 sys.stdout.write("INVALID_FREQ\n")
 
@@ -125,6 +214,7 @@ while True:
 
         elif raw == "ls":
             entries = [e for e in os.ilistdir() if not is_protected(e[0])]
+            entries.sort(key=lambda e: (0 if e[1] == 0x4000 else 1, e[0].lower()))
             if not entries:
                 sys.stdout.write(get_short_path() + "\n")
                 sys.stdout.write("EMPTY\n")
@@ -135,23 +225,29 @@ while True:
             else:
                 total_pages = (len(entries) + 16) // 17
                 page = 0
-                sys.stdout.write("__run_start__\n")
+                drain_stdin()
+                sys.stdout.write("__run_start__\n__key_start__\n")
                 render_ls_page(entries, page, total_pages)
-                while True:
-                    nav = sys.stdin.readline()
-                    if not nav or "\x03" in nav:
-                        break
-                    cmd = nav.strip().lower()
-                    if cmd == "q":
-                        break
-                    elif cmd == "n":
-                        if page + 1 < total_pages:
-                            page += 1
-                    elif cmd == "b":
-                        if page > 0:
-                            page -= 1
-                    render_ls_page(entries, page, total_pages)
-                sys.stdout.write("__run_end__\n")
+                try:
+                    while True:
+                        ch = sys.stdin.read(1)
+                        if not ch or ch == "\x03":
+                            break
+                        cmd = ch.lower()
+                        if cmd == "q":
+                            sys.stdout.write("__clear__\n")
+                            break
+                        elif cmd == "n":
+                            if page + 1 < total_pages:
+                                page += 1
+                                render_ls_page(entries, page, total_pages)
+                        elif cmd == "b":
+                            if page > 0:
+                                page -= 1
+                                render_ls_page(entries, page, total_pages)
+                except KeyboardInterrupt:
+                    pass
+                sys.stdout.write("__key_end__\n__run_end__\n")
 
         elif raw.startswith("mk -f ") or raw.startswith("mk -d "):
             parts = raw.split()
@@ -223,8 +319,7 @@ while True:
                     try:
                         with open(fname, "r") as f:
                             code = f.read()
-                        while poller.poll(0):
-                            sys.stdin.read(1)
+                        drain_stdin()
                         gc.collect()
                         sys.stdout.write("__run_start__\n")
                         def _run_input(prompt=""):
@@ -234,17 +329,69 @@ while True:
                             if not s or "\x03" in s:
                                 raise KeyboardInterrupt
                             return s.rstrip("\r\n")
-                        env = {"__name__": "__main__", "input": _run_input}
+                        def _run_clear():
+                            sys.stdout.write("\n__clear__\n")
+                        def _run_getch():
+                            drain_stdin()
+                            sys.stdout.write("\n__key_start__\n")
+                            try:
+                                ch = sys.stdin.read(1)
+                                if not ch or ch == "\x03":
+                                    raise KeyboardInterrupt
+                                return ch
+                            finally:
+                                sys.stdout.write("__key_end__\n")
+                        env = {
+                            "__name__": "__main__",
+                            "input": _run_input,
+                            "clear": _run_clear,
+                            "getch": _run_getch
+                        }
                         try:
                             exec(code, env)
                         except KeyboardInterrupt:
-                            sys.stdout.write("STOPPED\n")
+                            sys.stdout.write("\nSTOPPED\n")
                         except Exception as e:
-                            sys.stdout.write(f"ERR: {e}\n")
-                        sys.stdout.write("__run_end__\n")
+                            sys.stdout.write(f"\nERR: {e}\n")
+                        sys.stdout.write("\n__run_end__\n")
                         gc.collect()
                     except Exception:
                         sys.stdout.write("RUN_FAILED\n")
+
+        elif raw.startswith("__drop__ "):
+            parts = line.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                sys.stdout.write("UPLOAD FAILED\n")
+            else:
+                try:
+                    total = int(parts[1])
+                    fname = parts[2].strip()
+                except Exception:
+                    sys.stdout.write("UPLOAD FAILED\n")
+                    continue
+                if is_protected(fname):
+                    sys.stdout.write("PROTECTED FILE\n")
+                else:
+                    try:
+                        st = os.statvfs("/")
+                        free_bytes = st[0] * st[3]
+                        try:
+                            existing_size = os.stat(fname)[6]
+                            exists = True
+                        except Exception:
+                            existing_size = 0
+                            exists = False
+                        if total > free_bytes + existing_size:
+                            sys.stdout.write("FILE IS HUGE\n")
+                        elif exists:
+                            if confirm_prompt("FILE EXISTS. REPLACE? Y/N"):
+                                receive_file(fname, total)
+                            else:
+                                sys.stdout.write("UPLOAD CANCELED\n")
+                        else:
+                            receive_file(fname, total)
+                    except Exception:
+                        sys.stdout.write("UPLOAD FAILED\n")
 
         elif raw == "sys -u":
             try:
@@ -255,71 +402,3 @@ while True:
                 sys.stdout.write("UPDATING\n")
                 time.sleep_ms(50)
                 machine.reset()
-
-        elif raw.startswith("__stat__ "):
-            fname = line[9:].strip()
-            if not fname:
-                sys.stdout.write("STAT_ERR\n")
-            else:
-                try:
-                    st = os.statvfs("/")
-                    fb = st[0] * st[3]
-                    try:
-                        es = os.stat(fname)[6]
-                        ex = 1
-                    except Exception:
-                        es = 0
-                        ex = 0
-                    sys.stdout.write(f"STAT:{fb}:{ex}:{es}\n")
-                except Exception:
-                    sys.stdout.write("STAT_ERR\n")
-
-        elif raw.startswith("__put__ "):
-            parts = line.split(None, 2)
-            if len(parts) < 3 or not parts[2].strip():
-                sys.stdout.write("PUT_ERR\n")
-            else:
-                fname = parts[2].strip()
-                f = None
-                try:
-                    total = int(parts[1])
-                    f = open(fname, "wb")
-                    sys.stdout.write("PUT_READY\n")
-                    written = 0
-                    ok = True
-                    while written < total:
-                        if not poller.poll(3000):
-                            ok = False
-                            break
-                        chunk_line = sys.stdin.readline()
-                        if not chunk_line:
-                            ok = False
-                            break
-                        hex_str = chunk_line.strip()
-                        if not hex_str:
-                            continue
-                        raw_bytes = bytes.fromhex(hex_str)
-                        f.write(raw_bytes)
-                        written += len(raw_bytes)
-                        sys.stdout.write("ACK\n")
-                    f.close()
-                    f = None
-                    if ok and written == total:
-                        sys.stdout.write("PUT_OK\n")
-                    else:
-                        try:
-                            os.remove(fname)
-                        except Exception:
-                            pass
-                        sys.stdout.write("PUT_ERR\n")
-                except Exception:
-                    if f is not None:
-                        try:
-                            f.close()
-                        except Exception:
-                            pass
-                    try:
-                        os.remove(fname)
-                    except Exception:
-                        pass
-                    sys.stdout.write("PUT_ERR\n")

@@ -179,6 +179,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     FileUpload fileUpload;
     CmdHistory cmdHistory;
     bool scriptRunning = false;
+    bool singleKeyMode = false;
 
     std::atomic<bool> stopWorker(false);
     std::atomic<bool> scanRequested(true);
@@ -186,6 +187,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::mutex serialMutex;
     HANDLE pendingSerial = INVALID_HANDLE_VALUE;
     std::string pendingPort = "";
+
+    auto disconnect = [&]() {
+        fileUpload.Reset();
+        scriptRunning = false;
+        singleKeyMode = false;
+        if (hSerial != INVALID_HANDLE_VALUE) {
+            CloseHandle(hSerial);
+            hSerial = INVALID_HANDLE_VALUE;
+        }
+        fwStatus.store(FwStatus::Finding);
+        scanRequested.store(true);
+    };
 
     std::thread workerThread([&]() {
         while (!stopWorker.load()) {
@@ -247,9 +260,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             g_DroppedFilePath.clear();
             bool uploadReady = fileUpload.HasPendingDrop() ||
                                currentLine == "UPLOAD" || currentLine == "UPLOAD ";
-            if (hSerial != INVALID_HANDLE_VALUE && !fileUpload.IsUploading() && !scriptRunning && uploadReady) {
+            if (hSerial != INVALID_HANDLE_VALUE && !fileUpload.IsUploading() && !scriptRunning && !singleKeyMode && uploadReady) {
                 std::string uploadCmd;
-                if (fileUpload.OnFileDropped(dropped.c_str(), hSerial, uploadCmd)) {
+                if (fileUpload.StageFile(dropped.c_str(), uploadCmd)) {
                     cmdHistory.ResetBrowse();
                     currentLine = uploadCmd;
                     cursorPos = currentLine.length();
@@ -266,71 +279,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 pendingPort.clear();
                 fileUpload.Reset();
                 scriptRunning = false;
+                singleKeyMode = false;
                 history.clear();
                 currentLine.clear();
                 cursorPos = 0;
                 incomingBuffer.clear();
             }
         } else {
-            if (fileUpload.IsUploading() && !currentLine.empty()) {
-                history.push_back(currentLine);
-                while (history.size() > MAXHISTORY)
-                    history.erase(history.begin());
-                currentLine.clear();
-                cursorPos = 0;
-            }
-
             FileUpload::Event upEvent = fileUpload.PollEvent();
             if (upEvent == FileUpload::Event::Disconnected) {
-                fileUpload.Reset();
-                scriptRunning = false;
-                CloseHandle(hSerial);
-                hSerial = INVALID_HANDLE_VALUE;
-                fwStatus.store(FwStatus::Finding);
-                scanRequested.store(true);
-            } else if (upEvent == FileUpload::Event::FileTooLarge) {
-                history.push_back(currentLine);
-                history.push_back("FILE IS HUGE");
-                while (history.size() > MAXHISTORY)
-                    history.erase(history.begin());
-                currentLine.clear();
-                cursorPos = 0;
-            } else if (upEvent == FileUpload::Event::UploadSuccess) {
-                history.push_back("UPLOAD WAS SUCCESSFUL");
-                while (history.size() > MAXHISTORY)
-                    history.erase(history.begin());
-            } else if (upEvent == FileUpload::Event::UploadFailed) {
-                if (!currentLine.empty()) {
-                    history.push_back(currentLine);
-                    currentLine.clear();
-                    cursorPos = 0;
-                }
-                history.push_back("UPLOAD FAILED");
-                while (history.size() > MAXHISTORY)
-                    history.erase(history.begin());
+                disconnect();
             }
 
-            if (hSerial != INVALID_HANDLE_VALUE && !fileUpload.IsBusy()) {
+            if (hSerial != INVALID_HANDLE_VALUE && !fileUpload.IsUploading()) {
                 DWORD commErrors = 0;
                 COMSTAT commStat;
                 if (!ClearCommError(hSerial, &commErrors, &commStat)) {
-                    fileUpload.Reset();
-                    scriptRunning = false;
-                    CloseHandle(hSerial);
-                    hSerial = INVALID_HANDLE_VALUE;
-                    fwStatus.store(FwStatus::Finding);
-                    scanRequested.store(true);
+                    disconnect();
                 } else {
                     char chunk[128];
                     DWORD bytesRead = 0;
                     BOOL ok = ReadFile(hSerial, chunk, sizeof(chunk) - 1, &bytesRead, NULL);
                     if (!ok) {
-                        fileUpload.Reset();
-                        scriptRunning = false;
-                        CloseHandle(hSerial);
-                        hSerial = INVALID_HANDLE_VALUE;
-                        fwStatus.store(FwStatus::Finding);
-                        scanRequested.store(true);
+                        disconnect();
                     } else if (bytesRead > 0) {
                         chunk[bytesRead] = '\0';
                         incomingBuffer.append(chunk, bytesRead);
@@ -343,16 +314,31 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                             incomingBuffer.erase(0, nl + 1);
 
-                            if (line == "__run_start__") {
+                            if (line == "__clear__") {
+                                history.clear();
+                            } else if (line == "__run_start__") {
                                 scriptRunning = true;
                             } else if (line == "__run_end__") {
                                 scriptRunning = false;
-                                if (!incomingBuffer.empty()) {
-                                    history.push_back(incomingBuffer);
-                                    incomingBuffer.clear();
-                                    while (history.size() > MAXHISTORY)
-                                        history.erase(history.begin());
+                                singleKeyMode = false;
+                            } else if (line == "__key_start__") {
+                                singleKeyMode = true;
+                                currentLine.clear();
+                                cursorPos = 0;
+                            } else if (line == "__key_end__") {
+                                singleKeyMode = false;
+                            } else if (line == "__send_file__") {
+                                if (fileUpload.StartUpload(hSerial)) {
+                                    break;
+                                } else {
+                                    const char* abortCmd = "PUT_ABORT\n";
+                                    DWORD bytesWritten = 0;
+                                    if (!WriteFile(hSerial, abortCmd, (DWORD)strlen(abortCmd), &bytesWritten, NULL)) {
+                                        disconnect();
+                                        break;
+                                    }
                                 }
+                            } else if (line == "__put_ready__" || line == "__ack__" || line == "__put_ok__" || line == "__put_err__") {
                             } else if (!line.empty()) {
                                 history.push_back(line);
                                 while (history.size() > MAXHISTORY)
@@ -371,28 +357,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (hSerial != INVALID_HANDLE_VALUE) {
             if (fileUpload.IsUploading()) {
                 io.InputQueueCharacters.resize(0);
-            } else if (fileUpload.IsConfirmingOverwrite()) {
-                bool answered = false;
-                for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
-                    unsigned int c = io.InputQueueCharacters[i];
-                    if (c == 'y' || c == 'Y') {
-                        history.push_back(currentLine);
-                        while (history.size() > MAXHISTORY)
-                            history.erase(history.begin());
-                        currentLine.clear();
-                        cursorPos = 0;
-                        fileUpload.OnConfirmYes(hSerial);
-                        answered = true;
-                        break;
-                    } else if (c == 'n' || c == 'N') {
-                        fileUpload.OnConfirmNo();
-                        answered = true;
-                        break;
+            } else if (singleKeyMode) {
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape) || (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C))) {
+                    io.InputQueueCharacters.resize(0);
+                    const char ctrlC = '\x03';
+                    DWORD bytesWritten = 0;
+                    if (!WriteFile(hSerial, &ctrlC, 1, &bytesWritten, NULL)) {
+                        disconnect();
                     }
-                }
-                io.InputQueueCharacters.resize(0);
-                if (!answered && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                    fileUpload.OnConfirmNo();
+                } else if (ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+                    io.InputQueueCharacters.resize(0);
+                    const char nlChar = '\n';
+                    DWORD bytesWritten = 0;
+                    if (!WriteFile(hSerial, &nlChar, 1, &bytesWritten, NULL)) {
+                        disconnect();
+                    }
+                } else {
+                    for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
+                        unsigned int c = io.InputQueueCharacters[i];
+                        if (c >= 'a' && c <= 'z') c -= 32;
+                        if (c >= 0x20 && c <= 0x7E) {
+                            char ch = (char)c;
+                            DWORD bytesWritten = 0;
+                            if (!WriteFile(hSerial, &ch, 1, &bytesWritten, NULL)) {
+                                disconnect();
+                            }
+                            break;
+                        }
+                    }
+                    io.InputQueueCharacters.resize(0);
                 }
             } else {
                 if (scriptRunning && (ImGui::IsKeyPressed(ImGuiKey_Escape) || (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)))) {
@@ -408,11 +401,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     const char ctrlC = '\x03';
                     DWORD bytesWritten = 0;
                     if (!WriteFile(hSerial, &ctrlC, 1, &bytesWritten, NULL)) {
-                        scriptRunning = false;
-                        CloseHandle(hSerial);
-                        hSerial = INVALID_HANDLE_VALUE;
-                        fwStatus.store(FwStatus::Finding);
-                        scanRequested.store(true);
+                        disconnect();
                     }
                 }
 
@@ -497,51 +486,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         incomingBuffer.clear();
                         std::string inputToSend = currentLine + "\n";
                         DWORD bytesWritten = 0;
-                        BOOL ok = WriteFile(hSerial, inputToSend.c_str(), (DWORD)inputToSend.length(), &bytesWritten, NULL);
-                        if (!ok) {
-                            scriptRunning = false;
-                            CloseHandle(hSerial);
-                            hSerial = INVALID_HANDLE_VALUE;
-                            fwStatus.store(FwStatus::Finding);
-                            scanRequested.store(true);
+                        if (!WriteFile(hSerial, inputToSend.c_str(), (DWORD)inputToSend.length(), &bytesWritten, NULL)) {
+                            disconnect();
                         }
                         currentLine.clear();
                         cursorPos = 0;
                     } else if (fileUpload.HasPendingDrop() && fileUpload.MatchesCommand(currentLine)) {
-                        cmdHistory.Push("UPLOAD");
-                        if (fileUpload.IsBusy()) {
-                            fileUpload.OnEnterPressed(hSerial);
-                        } else {
-                            fileUpload.OnEnterPressed(hSerial);
-                            if (fileUpload.IsUploading()) {
-                                history.push_back(currentLine);
-                                while (history.size() > MAXHISTORY)
-                                    history.erase(history.begin());
-                                currentLine.clear();
-                                cursorPos = 0;
+                        history.push_back(currentLine);
+                        while (history.size() > MAXHISTORY)
+                            history.erase(history.begin());
+                        std::string dropCmd;
+                        if (fileUpload.ConsumeDropCommand(dropCmd)) {
+                            DWORD bytesWritten = 0;
+                            if (!WriteFile(hSerial, dropCmd.c_str(), (DWORD)dropCmd.length(), &bytesWritten, NULL)) {
+                                disconnect();
                             }
                         }
+                        currentLine.clear();
+                        cursorPos = 0;
                     } else {
                         if (fileUpload.HasPendingDrop())
                             fileUpload.Reset();
-
-                        cmdHistory.Push(currentLine.compare(0, 7, "UPLOAD ") == 0 ? std::string("UPLOAD") : currentLine);
-
-                        if (currentLine == "CLEAR") {
-                            history.clear();
-                        } else {
-                            history.push_back(currentLine);
-                            std::string commandToSend = currentLine + "\n";
-                            DWORD bytesWritten;
-                            BOOL ok = WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL);
-                            if (!ok) {
-                                CloseHandle(hSerial);
-                                hSerial = INVALID_HANDLE_VALUE;
-                                fwStatus.store(FwStatus::Finding);
-                                scanRequested.store(true);
-                            }
-                            while (history.size() > MAXHISTORY)
-                                history.erase(history.begin());
+                        cmdHistory.Push(currentLine);
+                        history.push_back(currentLine);
+                        while (history.size() > MAXHISTORY)
+                            history.erase(history.begin());
+                        std::string commandToSend = currentLine + "\n";
+                        DWORD bytesWritten = 0;
+                        if (!WriteFile(hSerial, commandToSend.c_str(), (DWORD)commandToSend.length(), &bytesWritten, NULL)) {
+                            disconnect();
                         }
                         currentLine.clear();
                         cursorPos = 0;
@@ -596,10 +569,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                 if (fileUpload.IsUploading()) {
                     rows.push_back({ "UPLOADING ", false, true });
-                } else if (fileUpload.IsConfirmingOverwrite()) {
-                    for (size_t pos = 0; pos < currentLine.length(); pos += COLS)
-                        rows.push_back({ currentLine.substr(pos, COLS), pos == 0, false });
-                    rows.push_back({ "FILE EXISTS. REPLACE? Y/N", false, false });
+                } else if (singleKeyMode) {
+                    if (!incomingBuffer.empty()) {
+                        for (size_t pos = 0; pos < incomingBuffer.length(); pos += COLS)
+                            rows.push_back({ incomingBuffer.substr(pos, COLS), pos == 0, false });
+                    }
                 } else {
                     showCursor = true;
                     std::string activeLine = scriptRunning ? (incomingBuffer + currentLine) : currentLine;
